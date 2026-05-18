@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Alert, Image, Keyboard, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+﻿import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Alert, Image, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { format } from 'date-fns';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -10,6 +11,7 @@ import { useSettings } from '../services/settings';
 import { useThemeColors, getFontFamily, ThemeColors } from '../services/theme';
 import * as ImagePicker from 'expo-image-picker';
 import { DiaryFolder, MOOD_OPTIONS } from '../types/diary';
+import { ALL_TEMPLATES } from '../types/template';
 import { exportSingleEntryToHtml, shareDiaryAsImage, saveDiaryImageToAlbum } from '../utils/export';
 import DiaryCard from '../components/DiaryCard';
 
@@ -98,7 +100,7 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   contentInput: {
     fontSize: settings.fontSize,
     lineHeight: 24,
-    minHeight: 280,
+    minHeight: 200,
     marginBottom: 16,
     color: colors.textSecondary,
     fontFamily: getFontFamily(settings.fontFamily),
@@ -258,11 +260,35 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     color: colors.textSecondary,
     fontFamily: getFontFamily(settings.fontFamily),
   },
+  modalBtnCancel: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: colors.input,
+    alignItems: 'center',
+  },
+  modalBtnCancelText: {
+    fontSize: 16,
+    color: colors.textSecondary,
+  },
+  modalBtnConfirm: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+  },
+  modalBtnConfirmText: {
+    fontSize: 16,
+    color: '#fff',
+    fontWeight: '600',
+  },
 });
 
 const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
   const entryId = route.params?.entryId;
   const presetFolderId = route.params?.folderId;
+  const templateId = route.params?.templateId;
   const database = useDatabase();
   const { settings } = useSettings();
   const colors = useThemeColors();
@@ -277,20 +303,18 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
   const [isSaving, setIsSaving] = useState(false);
   const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(!entryId);
   const [isEditing, setIsEditing] = useState(false);
   const [mood, setMood] = useState<string | null>(null);
   const [imageUris, setImageUris] = useState<string[]>([]);
   const cardRef = useRef<View>(null) as React.MutableRefObject<View>;
   const formRef = useRef({ title: '', content: '', tagsText: '', folderId: null as string | null, mood: null as string | null, imageUris: [] as string[] });
-  const scrollRef = useRef<ScrollView>(null);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const scrollRef = useRef<any>(null);
 
-  useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', (e) => setKeyboardHeight(e.endCoordinates.height));
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
-    return () => { showSub.remove(); hideSub.remove(); };
-  }, []);
+
   formRef.current = { title, content, tagsText, folderId, mood, imageUris };
+
+
 
   const styles = useStyles(colors, settings);
 
@@ -318,6 +342,14 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
       if (!entryId) {
         navigation.setOptions({ title: '新建日记' });
         setLoadedUpdatedAt(new Date().toISOString());
+        if (templateId) {
+          const template = ALL_TEMPLATES.find((t) => t.id === templateId);
+          if (template) {
+            if (template.title) setTitle(template.title);
+            if (template.content) setContent(template.content);
+            setShowTemplateModal(false);
+          }
+        }
         return;
       }
 
@@ -356,6 +388,8 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
     };
   }, [database, entryId, navigation]);
 
+  const handleSaveRef = useRef<any>(null);
+
   const handleBack = useCallback(() => {
     if (!hasUnsavedChanges) {
       navigation.goBack();
@@ -367,7 +401,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
       { text: '不保存', style: 'destructive', onPress: () => navigation.goBack() },
       { text: '保存', onPress: () => handleSave() },
     ]);
-  }, [hasUnsavedChanges, navigation, handleSave]);
+  }, [hasUnsavedChanges, navigation]);
 
   // 拦截全面屏手势返回和物理返回键
   const pendingActionRef = useRef<any>(null);
@@ -402,7 +436,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
     });
 
     return unsubscribe;
-  }, [hasUnsavedChanges, navigation, handleSave]);
+  }, [hasUnsavedChanges, navigation]);
 
   const handleSaveAndExit = useCallback(async () => {
     const form = formRef.current;
@@ -482,6 +516,23 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
       setIsSaving(false);
     }
   }, [database, entryId, navigation]);
+  handleSaveRef.current = handleSave;
+
+  const handleSelectTemplate = (template: any) => {
+    const apply = () => {
+      if (template.title) setTitle(template.title);
+      if (template.content) setContent(template.content);
+      setShowTemplateModal(false);
+    };
+    if (content.trim()) {
+      Alert.alert('应用模板', '当前内容会被模板替换，确定吗？', [
+        { text: '取消', style: 'cancel' },
+        { text: '确定', onPress: apply },
+      ]);
+    } else {
+      apply();
+    }
+  };
 
   const handleShare = useCallback(async () => {
     const trimmedTitle = title.trim();
@@ -562,10 +613,15 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
       ),
       headerRight: () => (
         <View style={styles.headerActions}>
+          {entryId && (
+            <TouchableOpacity onPress={() => setShowTemplateModal(true)} style={styles.headerButton} accessibilityLabel="应用模板">
+              <MaterialIcons name="description" size={22} color={colors.primary} />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={handleTogglePin} style={styles.headerButton} accessibilityLabel="置顶">
             <MaterialIcons name="push-pin" size={22} color={isPinned ? colors.primary : colors.placeholder} />
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleShare} style={styles.headerButton} accessibilityLabel="分享">
+          <TouchableOpacity onPress={handleShare} style={styles.headerButton} accessibilityLabel="分享。">
             <MaterialIcons name="share" size={22} color={colors.primary} />
           </TouchableOpacity>
           <TouchableOpacity onPress={handleSave} style={styles.headerButton} disabled={isSaving} accessibilityLabel="保存日记">
@@ -598,7 +654,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         <DiaryCard ref={cardRef} entry={currentEntry} avatarUri={settings.avatarUri} nickname={settings.nickname} />
       </View>
 
-      <ScrollView ref={scrollRef} contentContainerStyle={[styles.scrollContent, { paddingBottom: keyboardHeight + 32 }]} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+      <KeyboardAwareScrollView ref={scrollRef} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" enableOnAndroid={true} extraScrollHeight={80}>
         {/* Folder selector */}
         <TouchableOpacity style={styles.folderSelector} onPress={() => setShowFolderPicker(!showFolderPicker)}>
           <MaterialIcons
@@ -642,8 +698,8 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
           onChangeText={setTitle}
           editable={!isSaving}
           blurOnSubmit={false}
-          onFocus={() => setIsEditing(true)}
-          onBlur={() => setIsEditing(false)}
+          onFocus={() => { setIsEditing(true);  }}
+          onBlur={() => { setIsEditing(false);  }}
         />
         {/* Mood selector */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.moodSelector} contentContainerStyle={styles.moodSelectorContent}>
@@ -661,6 +717,16 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         </ScrollView>
 
         <TextInput
+          style={[styles.tagsInput, { color: colors.text, backgroundColor: colors.input, borderRadius: 8, paddingHorizontal: 12, marginVertical: 8 }]}
+          placeholder="标签（如：#生活#日常#感悟）"
+          placeholderTextColor={colors.placeholder}
+          value={tagsText}
+          onChangeText={setTagsText}
+          editable={!isSaving}
+          blurOnSubmit={false}
+        />
+
+        <TextInput
           style={styles.contentInput}
           placeholder="记录你的思绪..."
           placeholderTextColor={colors.placeholder}
@@ -670,12 +736,8 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
           multiline
           textAlignVertical="top"
           blurOnSubmit={false}
-          onFocus={() => {
-            setIsEditing(true);
-            setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-          }}
-          onBlur={() => setIsEditing(false)}
-          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
+          onFocus={() => { setIsEditing(true);  }}
+          onBlur={() => { setIsEditing(false);  }}
         />
 
         {/* Image grid */}
@@ -705,21 +767,40 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
             -- {format(new Date(loadedUpdatedAt || new Date()), 'MM/dd HH:mm')}
           </Text>
         )}
-        <TextInput
-          style={styles.tagsInput}
-          placeholder="标签（如：#生活#日常#感悟）"
-          placeholderTextColor={colors.placeholder}
-          value={tagsText}
-          onChangeText={setTagsText}
-          editable={!isSaving}
-          blurOnSubmit={false}
-          onFocus={() => {
-            setIsEditing(true);
-            setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 300);
-          }}
-          onBlur={() => setIsEditing(false)}
-        />
-      </ScrollView>
+
+      </KeyboardAwareScrollView>
+
+      {/* Template Selection Modal */}
+      <Modal visible={showTemplateModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '70%' }]}>
+            <Text style={styles.modalTitle}>选择模板</Text>
+            <ScrollView style={{ maxHeight: 400 }}>
+              {ALL_TEMPLATES.map((t) => (
+                <TouchableOpacity
+                  key={t.id}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.hairline }}
+                  onPress={() => handleSelectTemplate(t)}
+                >
+                  <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: t.color + '20', justifyContent: 'center', alignItems: 'center' }}>
+                    <MaterialIcons name={t.icon as any} size={22} color={t.color} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 16, fontWeight: '600', color: colors.text }}>{t.name}</Text>
+                    <Text style={{ fontSize: 12, color: colors.textTertiary, marginTop: 2 }} numberOfLines={1}>
+                      {t.content ? t.content.split('\n')[0].substring(0, 30) + '...' : '空白日记'}
+                    </Text>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={20} color={colors.placeholder} />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={[styles.modalBtnCancel, { marginTop: 12 }]} onPress={() => setShowTemplateModal(false)}>
+              <Text style={styles.modalBtnCancelText}>跳过</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Export Modal */}
       <Modal visible={showExportModal} transparent animationType="fade">
@@ -730,7 +811,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
             <TouchableOpacity style={styles.exportOption} onPress={handleExportImage}>
               <MaterialIcons name="image" size={28} color="#FF9500" />
               <View style={styles.exportOptionText}>
-                <Text style={styles.exportOptionTitle}>分享图片</Text>
+                <Text style={styles.exportOptionTitle}>分享。图片</Text>
                 <Text style={styles.exportOptionDesc}>生成精美卡片，发送给朋友</Text>
               </View>
             </TouchableOpacity>

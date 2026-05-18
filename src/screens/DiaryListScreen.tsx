@@ -17,7 +17,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { v4 as uuidv4 } from 'uuid';
 import { RootStackParamList } from '../../App';
 import { useDatabase } from '../services/database';
-import { hasPassword, verifyPassword, getLockedFolderIds, setFolderLocked as saveFolderLocked, isFolderLocked } from '../services/password';
+import { hasPassword, verifyPassword, getLockedFolderIds, setFolderLocked as saveFolderLocked, isFolderLocked, isBiometricAvailable, authenticateWithBiometric } from '../services/password';
 import { useSettings } from '../services/settings';
 import { useThemeColors, getFontFamily, ThemeColors } from '../services/theme';
 import { DiaryEntry, DiaryFolder, MOOD_OPTIONS } from '../types/diary';
@@ -385,6 +385,29 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     marginTop: 2,
     fontFamily: getFontFamily(settings.fontFamily),
   },
+  modalBtnCancelSmall: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: colors.input,
+    alignItems: 'center',
+  },
+  modalBtnCancelSmallText: {
+    fontSize: 16,
+    color: colors.textSecondary,
+  },
+  modalBtnConfirm: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+  },
+  modalBtnConfirmText: {
+    fontSize: 16,
+    color: '#fff',
+    fontWeight: '600',
+  },
 });
 
 const DiaryListScreen = () => {
@@ -407,6 +430,7 @@ const DiaryListScreen = () => {
   const [passwordInput, setPasswordInput] = useState('');
   const [lockedFolderIds, setLockedFolderIds] = useState<string[]>([]);
   const [userHasPassword, setUserHasPassword] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [unlockedIds, setUnlockedIds] = useState<Set<string>>(new Set());
 
 
@@ -424,6 +448,8 @@ const DiaryListScreen = () => {
       setLockedFolderIds(ids);
       const hp = await hasPassword();
       setUserHasPassword(hp);
+      const bio = await isBiometricAvailable();
+      setBiometricAvailable(bio);
     } catch (error) {
       console.error('Failed to load locked folders', error);
     }
@@ -834,10 +860,20 @@ const DiaryListScreen = () => {
       const newUnlocked = new Set(unlockedIds).add(activeFolderId);
       setUnlockedIds(newUnlocked);
       setPasswordInput('');
-      // Reload data to show entries from newly unlocked folder
       setTimeout(() => loadData(), 100);
     } else {
       Alert.alert('错误', '密码错误。');
+    }
+  };
+
+  const handleBiometricVerify = async () => {
+    const ok = await authenticateWithBiometric();
+    if (ok && activeFolderId) {
+      setShowPasswordVerify(false);
+      const newUnlocked = new Set(unlockedIds).add(activeFolderId);
+      setUnlockedIds(newUnlocked);
+      setPasswordInput('');
+      setTimeout(() => loadData(), 100);
     }
   };
 
@@ -865,6 +901,12 @@ const DiaryListScreen = () => {
               <Text style={styles.modalBtnConfirmText}>解锁</Text>
             </TouchableOpacity>
           </View>
+          {biometricAvailable && (
+            <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16, paddingVertical: 10 }} onPress={handleBiometricVerify}>
+              <MaterialIcons name="fingerprint" size={28} color={colors.primary} />
+              <Text style={{ fontSize: 14, color: colors.primary }}>使用指纹解锁</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </Modal>

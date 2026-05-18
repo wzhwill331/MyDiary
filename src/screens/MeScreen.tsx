@@ -18,8 +18,9 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSettings, ThemeMode } from '../services/settings';
 import { useThemeColors } from '../services/theme';
 import { useDatabase } from '../services/database';
-import { hasPassword, setPassword, verifyPassword, removePassword } from '../services/password';
+import { hasPassword, setPassword, verifyPassword, removePassword, isBiometricAvailable, authenticateWithBiometric } from '../services/password';
 import { DiaryEntry, DiaryFolder } from '../types/diary';
+import { TEMPLATE_CATEGORIES, DiaryTemplate } from '../types/template';
 import {
   exportDiaryEntriesToJson,
   exportDiaryEntriesToHtml,
@@ -48,7 +49,7 @@ const MeScreen = () => {
   const { settings, updateSettings } = useSettings();
   const colors = useThemeColors();
   const database = useDatabase();
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const [showNicknameModal, setShowNicknameModal] = useState(false);
   const [nicknameInput, setNicknameInput] = useState(settings.nickname);
   const [stats, setStats] = useState({ totalEntries: 0, monthEntries: 0, totalChars: 0, streak: 0 });
@@ -64,6 +65,7 @@ const MeScreen = () => {
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [hasPw, setHasPw] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [selectStep, setSelectStep] = useState<SelectStep>('folder');
   const [folders, setFolders] = useState<DiaryFolder[]>([]);
   const [allEntries, setAllEntries] = useState<DiaryEntry[]>([]);
@@ -73,6 +75,7 @@ const MeScreen = () => {
   useFocusEffect(
     useCallback(() => {
       hasPassword().then(setHasPw);
+      isBiometricAvailable().then(setBiometricAvailable);
     }, [])
   );
 
@@ -244,11 +247,22 @@ const MeScreen = () => {
     }
   };
 
+  const handleBiometricVerify = async () => {
+    const ok = await authenticateWithBiometric();
+    if (ok) {
+      setPasswordStep('menu');
+      setPasswordInput('');
+    }
+  };
+
   const handleChangePassword = async () => {
-    const ok = await verifyPassword(passwordInput);
-    if (!ok) {
-      Alert.alert('错误', '当前密码错误。');
-      return;
+    // If passwordInput is empty, it means biometric was used to verify, skip re-verify
+    if (passwordInput) {
+      const ok = await verifyPassword(passwordInput);
+      if (!ok) {
+        Alert.alert('错误', '当前密码错误。');
+        return;
+      }
     }
     setPasswordStep('set');
     setPasswordInput('');
@@ -256,10 +270,12 @@ const MeScreen = () => {
   };
 
   const handleRemovePassword = async () => {
-    const ok = await verifyPassword(passwordInput);
-    if (!ok) {
-      Alert.alert('错误', '密码错误。');
-      return;
+    if (passwordInput) {
+      const ok = await verifyPassword(passwordInput);
+      if (!ok) {
+        Alert.alert('错误', '密码错误。');
+        return;
+      }
     }
     await removePassword();
     setHasPw(false);
@@ -267,8 +283,23 @@ const MeScreen = () => {
     Alert.alert('成功', '密码已移除，所有文件夹已解锁。');
   };
 
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+
+  const handleTemplatePreview = (template: DiaryTemplate) => {
+    Alert.alert(
+      template.name,
+      template.content || '空白日记，无预设内容。',
+      [
+        { text: '取消', style: 'cancel' },
+        { text: '用这个模板写日记', onPress: () => {
+          navigation.navigate('DiaryTab', { screen: 'DiaryDetail', params: { templateId: template.id } } as any);
+        }},
+      ]
+    );
+  };
+
   const handleAbout = () => {
-    Alert.alert('关于 MyDiary', '版本：1.3.0\n\n一款简洁优雅的日记应用\n支持 Markdown、图片、标签、分类管理', [{ text: '确定' }]);
+    Alert.alert('关于 MyDiary', '版本：1.2.1\n\n一款简洁优雅的日记应用\n支持 Markdown、图片、标签、分类管理', [{ text: '确定' }]);
   };
 
   const handleSponsor = () => {
@@ -478,6 +509,39 @@ const MeScreen = () => {
       </>)}
 
       {/* About */}
+      {renderSection('日记模板', <>
+        {TEMPLATE_CATEGORIES.map((cat) => (
+          <View key={cat.id}>
+            <TouchableOpacity
+              style={styles.settingRow}
+              onPress={() => setExpandedCategory(expandedCategory === cat.id ? null : cat.id)}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: cat.color + '20', justifyContent: 'center', alignItems: 'center' }}>
+                  <MaterialIcons name={cat.icon as any} size={18} color={cat.color} />
+                </View>
+                <Text style={styles.settingTitle}>{cat.name}</Text>
+                <Text style={{ fontSize: 12, color: colors.placeholder }}>({cat.templates.length})</Text>
+              </View>
+              <MaterialIcons name={expandedCategory === cat.id ? 'expand-less' : 'expand-more'} size={22} color={colors.placeholder} />
+            </TouchableOpacity>
+            {expandedCategory === cat.id && cat.templates.map((t) => (
+              <TouchableOpacity
+                key={t.id}
+                style={[styles.settingRow, { paddingLeft: 44 }]}
+                onPress={() => handleTemplatePreview(t)}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <MaterialIcons name={t.icon as any} size={18} color={t.color} />
+                  <Text style={[styles.settingTitle, { fontSize: 14 }]}>{t.name}</Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={18} color={colors.placeholder} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        ))}
+      </>)}
+
       {renderSection('安全', <>
         {renderSettingRow(hasPw ? '修改密码' : '设置密码', handlePasswordMenu)}
       </>)}
@@ -583,6 +647,12 @@ const MeScreen = () => {
                     <Text style={styles.modalBtnConfirmText}>验证</Text>
                   </TouchableOpacity>
                 </View>
+                {biometricAvailable && (
+                  <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16, paddingVertical: 10 }} onPress={handleBiometricVerify}>
+                    <MaterialIcons name="fingerprint" size={28} color={colors.primary} />
+                    <Text style={{ fontSize: 14, color: colors.primary }}>使用指纹验证</Text>
+                  </TouchableOpacity>
+                )}
               </>
             )}
 
@@ -603,7 +673,7 @@ const MeScreen = () => {
             )}
 
             {passwordStep === 'menu' && (
-              <>>
+              <>
                 <Text style={styles.modalTitle}>密码管理</Text>
                 <TouchableOpacity style={styles.exportOption} onPress={handleChangePassword}>
                   <MaterialIcons name="lock" size={24} color={colors.primary} />

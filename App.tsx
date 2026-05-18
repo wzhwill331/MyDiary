@@ -22,7 +22,7 @@ import TrashScreen from './src/screens/TrashScreen';
 
 export type RootStackParamList = {
   DiaryList: undefined;
-  DiaryDetail: { entryId?: string; folderId?: string };
+  DiaryDetail: { entryId?: string; folderId?: string; templateId?: string };
   Trash: undefined;
 };
 
@@ -60,10 +60,10 @@ function AppContent() {
             notification: '#FF3B30',
           },
           fonts: {
-            regular: { fontFamily: undefined, fontWeight: '400' },
-            medium: { fontFamily: undefined, fontWeight: '500' },
-            bold: { fontFamily: undefined, fontWeight: '700' },
-            heavy: { fontFamily: undefined, fontWeight: '900' },
+            regular: { fontFamily: 'System' as any, fontWeight: '400' },
+            medium: { fontFamily: 'System' as any, fontWeight: '500' },
+            bold: { fontFamily: 'System' as any, fontWeight: '700' },
+            heavy: { fontFamily: 'System' as any, fontWeight: '900' },
           },
         }}
       >

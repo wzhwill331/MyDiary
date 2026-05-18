@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import * as LocalAuthentication from 'expo-local-authentication';
 
 const PASSWORD_KEY = 'mydiary_folder_password';
 const LOCKED_FOLDERS_KEY = 'mydiary_locked_folders';
@@ -17,6 +18,23 @@ export const setPassword = async (newPassword: string): Promise<void> => {
 export const verifyPassword = async (password: string): Promise<boolean> => {
   const stored = await SecureStore.getItemAsync(PASSWORD_KEY);
   return stored === password;
+};
+
+// ==================== Biometric ====================
+
+export const isBiometricAvailable = async (): Promise<boolean> => {
+  const compatible = await LocalAuthentication.hasHardwareAsync();
+  const enrolled = await LocalAuthentication.isEnrolledAsync();
+  return compatible && enrolled;
+};
+
+export const authenticateWithBiometric = async (): Promise<boolean> => {
+  const result = await LocalAuthentication.authenticateAsync({
+    promptMessage: '验证指纹以解锁文件夹',
+    cancelLabel: '取消',
+    disableDeviceFallback: false,
+  });
+  return result.success;
 };
 
 export const removePassword = async (): Promise<void> => {
