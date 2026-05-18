@@ -136,10 +136,17 @@ const generateFullHtml = (entries: DiaryEntry[], folders: DiaryFolder[]): string
 </html>`;
 };
 
-export const exportDiaryEntriesToJson = async (database: DatabaseApi) => {
+export const exportDiaryEntriesToJson = async (database: DatabaseApi, selectedIds?: string[]) => {
   try {
     const backup = await database.exportEntries();
-    const jsonString = JSON.stringify(backup, null, 2);
+    const filteredEntries = selectedIds
+      ? backup.entries.filter((e) => selectedIds.includes(e.id))
+      : backup.entries;
+    const filteredFolders = selectedIds
+      ? backup.folders.filter((f) => filteredEntries.some((e) => e.folderId === f.id))
+      : backup.folders;
+    const payload = { entries: filteredEntries, folders: filteredFolders };
+    const jsonString = JSON.stringify(payload, null, 2);
     const file = new File(Paths.document, EXPORT_FILE_NAME);
 
     if (!file.exists) {
@@ -153,7 +160,7 @@ export const exportDiaryEntriesToJson = async (database: DatabaseApi) => {
         UTI: 'public.json',
         dialogTitle: '导出 MyDiary 备份',
       });
-      Alert.alert('导出成功', `已导出 ${backup.entries.length} 篇日记。`);
+      Alert.alert('导出成功', `已导出 ${filteredEntries.length} 篇日记。`);
     } else {
       Alert.alert('导出成功', `已导出到：${file.uri}`);
     }
@@ -163,10 +170,16 @@ export const exportDiaryEntriesToJson = async (database: DatabaseApi) => {
   }
 };
 
-export const exportDiaryEntriesToHtml = async (database: DatabaseApi) => {
+export const exportDiaryEntriesToHtml = async (database: DatabaseApi, selectedIds?: string[]) => {
   try {
     const backup = await database.exportEntries();
-    const html = generateFullHtml(backup.entries, backup.folders);
+    const filteredEntries = selectedIds
+      ? backup.entries.filter((e) => selectedIds.includes(e.id))
+      : backup.entries;
+    const filteredFolders = selectedIds
+      ? backup.folders.filter((f) => filteredEntries.some((e) => e.folderId === f.id))
+      : backup.folders;
+    const html = generateFullHtml(filteredEntries, filteredFolders);
     const file = new File(Paths.document, 'MyDiary_Export.html');
 
     if (!file.exists) {
@@ -236,6 +249,234 @@ export const importDiaryEntriesFromJson = async (database: DatabaseApi) => {
   } catch (error) {
     console.error('Failed to import diary entries', error);
     Alert.alert('导入失败', '导入日记时发生错误，请确认文件是有效的 JSON 备份。');
+  }
+};
+
+// ==================== Lightweight Frontmatter Parser (no Node.js deps) ====================
+
+import { v4 as uuidv4 } from 'uuid';
+
+/**
+ * Simple YAML-like frontmatter stringify (supports strings, string arrays)
+ */
+const frontmatterStringify = (data: Record<string, unknown>): string => {
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(data)) {
+    if (Array.isArray(value)) {
+      lines.push(`${key}:`);
+      for (const item of value) {
+        lines.push(`  - ${item}`);
+      }
+    } else {
+      // Quote strings that might cause YAML issues
+      const str = String(value);
+      if (/^[\d\-]/.test(str) || /[:\[\]{}#&*!|>'"%@`]/.test(str)) {
+        lines.push(`${key}: "${str.replace(/"/g, '\\"')}"`);
+      } else {
+        lines.push(`${key}: ${str}`);
+      }
+    }
+  }
+  return lines.join('\n');
+};
+
+/**
+ * Simple frontmatter parser: extracts --- delimited YAML-like block
+ */
+const parseFrontmatter = (raw: string): { data: Record<string, unknown>; content: string } => {
+  const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (!match) return { data: {}, content: raw };
+
+  const yamlBlock = match[1];
+  const content = match[2];
+  const data: Record<string, unknown> = {};
+
+  let currentKey = '';
+  let isArray = false;
+
+  for (const line of yamlBlock.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Array item: "  - value"
+    if (isArray && trimmed.startsWith('- ')) {
+      const val = trimmed.slice(2).trim();
+      if (!Array.isArray(data[currentKey])) data[currentKey] = [];
+      (data[currentKey] as string[]).push(val);
+      continue;
+    }
+
+    isArray = false;
+    const colonIdx = trimmed.indexOf(':');
+    if (colonIdx === -1) continue;
+
+    const key = trimmed.slice(0, colonIdx).trim();
+    let val = trimmed.slice(colonIdx + 1).trim();
+
+    // Remove quotes
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+
+    if (val === '') {
+      // Could be an array
+      currentKey = key;
+      isArray = true;
+      data[key] = [];
+    } else {
+      data[key] = val;
+      currentKey = key;
+    }
+  }
+
+  return { data, content };
+};
+
+// ==================== Markdown Export (with frontmatter) ====================
+
+const generateEntryMdWithFrontmatter = (entry: DiaryEntry, folderName?: string): string => {
+  const data: Record<string, unknown> = {
+    id: entry.id,
+    title: entry.title || '无标题',
+    date: entry.createdAt,
+    updatedAt: entry.updatedAt,
+  };
+  if (folderName) data.folder = folderName;
+  if (entry.tags.length > 0) data.tags = entry.tags;
+
+  const body = entry.content || '没有正文';
+  return `---\n${frontmatterStringify(data)}\n---\n\n${body}`;
+};
+
+export const exportDiaryEntriesToMarkdown = async (database: DatabaseApi, selectedIds?: string[]) => {
+  try {
+    const backup = await database.exportEntries();
+    const filteredEntries = selectedIds
+      ? backup.entries.filter((e) => selectedIds.includes(e.id))
+      : backup.entries;
+    const folderMap = new Map(backup.folders.map((f) => [f.id, f.name]));
+
+    const sorted = [...filteredEntries].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const sections = sorted.map((e) =>
+      generateEntryMdWithFrontmatter(e, e.folderId ? folderMap.get(e.folderId) : undefined)
+    );
+
+    const content = sections.join('\n\n---\n\n');
+
+    const file = new File(Paths.document, 'MyDiary_Export.md');
+    if (!file.exists) file.create({ intermediates: true });
+    file.write(content);
+
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(file.uri, {
+        mimeType: 'text/markdown',
+        UTI: 'net.daringfireball.markdown',
+        dialogTitle: '导出日记为 Markdown',
+      });
+      Alert.alert('导出成功', `已导出 ${filteredEntries.length} 篇日记。`);
+    } else {
+      Alert.alert('导出成功', `已导出到：${file.uri}`);
+    }
+  } catch (error) {
+    console.error('Failed to export diary entries as Markdown', error);
+    Alert.alert('导出失败', '导出 Markdown 时发生错误。');
+  }
+};
+
+// ==================== Markdown Import ====================
+
+export const importDiaryEntriesFromMarkdown = async (database: DatabaseApi) => {
+  try {
+    const pickedFile = await File.pickFileAsync(undefined, 'text/markdown');
+    const file = Array.isArray(pickedFile) ? pickedFile[0] : pickedFile;
+
+    if (!file) return;
+
+    const rawContent = await file.text();
+
+    // Split by entry separator (\n---\n)
+    const sections = rawContent.split(/\n---\n/);
+
+    const newEntries: DiaryEntry[] = [];
+    const newFolderNames = new Set<string>();
+
+    for (const section of sections) {
+      const trimmed = section.trim();
+      if (!trimmed) continue;
+
+      const { data, content } = parseFrontmatter(trimmed);
+
+      if (data.id) {
+        const entry: DiaryEntry = {
+          id: data.id as string,
+          title: (data.title as string) || '无标题',
+          content: content.trim(),
+          tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
+          folderId: null,
+          createdAt: (data.date as string) || new Date().toISOString(),
+          updatedAt: (data.updatedAt as string) || (data.date as string) || new Date().toISOString(),
+        };
+
+        if (data.folder) {
+          newFolderNames.add(data.folder as string);
+          (entry as any)._folderName = data.folder;
+        }
+
+        newEntries.push(entry);
+      } else {
+        // Fallback: plain markdown without frontmatter
+        const lines = trimmed.split('\n');
+        const title = lines[0]?.replace(/^#+\s*/, '') || '无标题';
+        const body = lines.slice(1).join('\n').trim();
+
+        newEntries.push({
+          id: uuidv4(),
+          title,
+          content: body,
+          tags: [],
+          folderId: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    if (newEntries.length === 0) {
+      Alert.alert('导入失败', '没有找到可导入的日记。');
+      return;
+    }
+
+    // Create folders if needed
+    const folderMap = new Map<string, string>();
+    const existingFolders = await database.listFolders();
+    for (const name of newFolderNames) {
+      const existing = existingFolders.find((f) => f.name === name);
+      if (existing) {
+        folderMap.set(name, existing.id);
+      } else {
+        const id = uuidv4();
+        await database.createFolder(id, { name, color: '#007AFF', icon: 'folder' });
+        folderMap.set(name, id);
+      }
+    }
+
+    // Resolve folder IDs
+    for (const entry of newEntries) {
+      const folderName = (entry as any)._folderName;
+      if (folderName && folderMap.has(folderName)) {
+        entry.folderId = folderMap.get(folderName)!;
+      }
+      delete (entry as any)._folderName;
+    }
+
+    const result = await database.importEntries(newEntries, []);
+    const parts = [`新增 ${result.added} 篇`, `跳过 ${result.skipped} 篇`];
+    if (newFolderNames.size > 0) parts.push(`新增 ${newFolderNames.size} 个日记夹`);
+    Alert.alert('导入完成', parts.join('，') + '。');
+  } catch (error) {
+    console.error('Failed to import diary entries from Markdown', error);
+    Alert.alert('导入失败', '导入 Markdown 时发生错误，请确认文件格式正确。');
   }
 };
 

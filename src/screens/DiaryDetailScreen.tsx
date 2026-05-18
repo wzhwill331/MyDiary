@@ -1,10 +1,13 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { format } from 'date-fns';
 import { MaterialIcons } from '@expo/vector-icons';
 import { v4 as uuidv4 } from 'uuid';
 import { RootStackParamList } from '../../App';
 import { useDatabase } from '../services/database';
+import { useSettings } from '../services/settings';
+import { useThemeColors, getFontFamily, ThemeColors } from '../services/theme';
 import { DiaryFolder } from '../types/diary';
 import { exportSingleEntryToHtml, shareDiaryAsImage, saveDiaryImageToAlbum } from '../utils/export';
 import DiaryCard from '../components/DiaryCard';
@@ -17,20 +20,191 @@ const parseTags = (value: string) =>
     .map((tag) => tag.trim())
     .filter(Boolean);
 
+const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily: string }) => StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 32,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  folderSelector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: colors.tagBg,
+    borderRadius: 8,
+    marginBottom: 12,
+    gap: 8,
+  },
+  folderSelectorText: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.textSecondary,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  folderPicker: {
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  folderPickerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 8,
+    borderBottomWidth: 0.5,
+    borderBottomColor: colors.hairline,
+  },
+  folderPickerItemActive: {
+    backgroundColor: colors.selectedBg,
+  },
+  folderPickerText: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.textSecondary,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  titleInput: {
+    fontSize: settings.fontSize + 8,
+    fontWeight: '700',
+    marginBottom: 15,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.hairline,
+    color: colors.text,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  contentInput: {
+    fontSize: settings.fontSize,
+    lineHeight: 24,
+    minHeight: 280,
+    marginBottom: 16,
+    color: colors.textSecondary,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  tagsInput: {
+    fontSize: settings.fontSize - 2,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.hairline,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.hairline,
+    color: colors.textSecondary,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  updatedAtLabel: {
+    fontSize: 11,
+    color: colors.placeholder,
+    textAlign: 'right',
+    opacity: 0.6,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  hiddenCard: {
+    position: 'absolute',
+    left: -9999,
+    top: -9999,
+    opacity: 0,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: colors.modalOverlay,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalContent: {
+    backgroundColor: colors.card,
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 16,
+    textAlign: 'center',
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  exportOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    backgroundColor: colors.tagBg,
+    borderRadius: 12,
+    marginBottom: 10,
+    gap: 12,
+  },
+  exportOptionText: {
+    flex: 1,
+  },
+  exportOptionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  exportOptionDesc: {
+    fontSize: 13,
+    color: colors.placeholder,
+    marginTop: 2,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  modalButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modalButtonCancel: {
+    backgroundColor: colors.tagBg,
+  },
+  modalButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+});
+
 const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
   const entryId = route.params?.entryId;
   const presetFolderId = route.params?.folderId;
   const database = useDatabase();
+  const { settings } = useSettings();
+  const colors = useThemeColors();
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [tagsText, setTagsText] = useState('');
   const [folderId, setFolderId] = useState<string | null>(presetFolderId ?? null);
   const [folders, setFolders] = useState<DiaryFolder[]>([]);
   const [originalSnapshot, setOriginalSnapshot] = useState({ title: '', content: '', tagsText: '', folderId: null as string | null });
+  const [loadedUpdatedAt, setLoadedUpdatedAt] = useState<string | null>(null);
+  const [isPinned, setIsPinned] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const cardRef = useRef<View>(null) as React.MutableRefObject<View>;
+
+  const styles = useStyles(colors, settings);
 
   const hasUnsavedChanges =
     title !== originalSnapshot.title ||
@@ -53,6 +227,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
       // Load entry if editing
       if (!entryId) {
         navigation.setOptions({ title: '新建日记' });
+        setLoadedUpdatedAt(new Date().toISOString());
         return;
       }
 
@@ -71,6 +246,8 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         setTagsText(nextSnapshot.tagsText);
         setFolderId(nextSnapshot.folderId);
         setOriginalSnapshot(nextSnapshot);
+        setLoadedUpdatedAt(entry.updatedAt);
+        setIsPinned(entry.isPinned ?? false);
         navigation.setOptions({ title: '编辑日记' });
       } catch (error) {
         console.error('Failed to load diary entry', error);
@@ -91,11 +268,86 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
       return;
     }
 
-    Alert.alert('放弃修改？', '当前日记还没有保存。', [
+    Alert.alert('未保存的修改', '当前日记还没有保存。', [
       { text: '继续编辑', style: 'cancel' },
-      { text: '放弃', style: 'destructive', onPress: () => navigation.goBack() },
+      { text: '不保存', style: 'destructive', onPress: () => navigation.goBack() },
+      { text: '保存', onPress: () => handleSave() },
     ]);
-  }, [hasUnsavedChanges, navigation]);
+  }, [hasUnsavedChanges, navigation, handleSave]);
+
+  // 拦截全面屏手势返回和物理返回键
+  const pendingActionRef = useRef<any>(null);
+  const justSavedRef = useRef(false);
+
+  // Reset justSavedRef when entering the screen
+  useEffect(() => {
+    justSavedRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      if (!hasUnsavedChanges || justSavedRef.current) {
+        return; // 没修改或刚保存，正常退出
+      }
+
+      // 阻止默认退出行为
+      e.preventDefault();
+
+      // 保存要执行的 action，等保存完成后再 dispatch
+      pendingActionRef.current = e.data.action;
+
+      Alert.alert('未保存的修改', '当前日记还没有保存。', [
+        { text: '继续编辑', style: 'cancel', onPress: () => { pendingActionRef.current = null; } },
+        { text: '不保存', style: 'destructive', onPress: () => {
+          const action = pendingActionRef.current;
+          pendingActionRef.current = null;
+          if (action) navigation.dispatch(action);
+        }},
+        { text: '保存', onPress: () => handleSaveAndExit() },
+      ]);
+    });
+
+    return unsubscribe;
+  }, [hasUnsavedChanges, navigation, handleSave]);
+
+  const handleSaveAndExit = useCallback(async () => {
+    const trimmedTitle = title.trim();
+    const trimmedContent = content.trim();
+
+    if (!trimmedTitle && !trimmedContent) {
+      Alert.alert('提示', '标题和正文不能都为空。');
+      pendingActionRef.current = null;
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      const input = {
+        title: trimmedTitle,
+        content: trimmedContent,
+        tags: parseTags(tagsText),
+        folderId,
+      };
+
+      if (entryId) {
+        await database.updateEntry(entryId, input);
+      } else {
+        await database.createEntry(uuidv4(), input);
+      }
+
+      // Save succeeded, now dispatch the pending navigation action
+      const action = pendingActionRef.current;
+      pendingActionRef.current = null;
+      justSavedRef.current = true;
+      setIsSaving(false);
+      if (action) navigation.dispatch(action);
+    } catch (error) {
+      console.error('Failed to save diary entry', error);
+      Alert.alert('错误', '保存日记失败。');
+      pendingActionRef.current = null;
+      setIsSaving(false);
+    }
+  }, [content, database, entryId, folderId, navigation, tagsText, title]);
 
   const handleSave = useCallback(async () => {
     const trimmedTitle = title.trim();
@@ -118,11 +370,13 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
       if (entryId) {
         await database.updateEntry(entryId, input);
       } else {
-        await database.createEntry(uuidv4(), input);
+        const newEntry = await database.createEntry(uuidv4(), input);
+        // Update URL params so subsequent saves use updateEntry
+        navigation.setParams({ entryId: newEntry.id } as any);
       }
 
       setOriginalSnapshot({ title: trimmedTitle, content: trimmedContent, tagsText, folderId });
-      navigation.goBack();
+      Alert.alert('已保存', '日记保存成功。');
     } catch (error) {
       console.error('Failed to save diary entry', error);
       Alert.alert('错误', '保存日记失败。');
@@ -167,6 +421,16 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
     await shareDiaryAsImage(cardRef);
   }, []);
 
+  const handleTogglePin = useCallback(async () => {
+    if (!entryId) return;
+    try {
+      await database.togglePinEntry(entryId);
+      setIsPinned(!isPinned);
+    } catch (error) {
+      console.error('Failed to toggle pin', error);
+    }
+  }, [entryId, database, isPinned]);
+
   const handleSaveToAlbum = useCallback(async () => {
     setShowExportModal(false);
     if (!cardRef.current) return;
@@ -177,21 +441,24 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
     navigation.setOptions({
       headerLeft: () => (
         <TouchableOpacity onPress={handleBack} style={styles.headerButton} accessibilityLabel="返回">
-          <MaterialIcons name="arrow-back" size={24} color="#007AFF" />
+          <MaterialIcons name="arrow-back" size={24} color={colors.primary} />
         </TouchableOpacity>
       ),
       headerRight: () => (
         <View style={styles.headerActions}>
+          <TouchableOpacity onPress={handleTogglePin} style={styles.headerButton} accessibilityLabel="置顶">
+            <MaterialIcons name="push-pin" size={22} color={isPinned ? colors.primary : colors.placeholder} />
+          </TouchableOpacity>
           <TouchableOpacity onPress={handleShare} style={styles.headerButton} accessibilityLabel="分享">
-            <MaterialIcons name="share" size={22} color="#007AFF" />
+            <MaterialIcons name="share" size={22} color={colors.primary} />
           </TouchableOpacity>
           <TouchableOpacity onPress={handleSave} style={styles.headerButton} disabled={isSaving} accessibilityLabel="保存日记">
-            <MaterialIcons name="save" size={24} color={isSaving ? '#9bbce0' : '#007AFF'} />
+            <MaterialIcons name="save" size={24} color={isSaving ? colors.placeholder : colors.primary} />
           </TouchableOpacity>
         </View>
       ),
     });
-  }, [handleBack, handleSave, handleShare, isSaving, navigation]);
+  }, [handleBack, handleSave, handleShare, handleTogglePin, isPinned, isSaving, navigation]);
 
   const currentFolder = folderId ? folders.find((f) => f.id === folderId) : null;
   const currentFolderName = currentFolder?.name || '未分类';
@@ -210,19 +477,19 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
     <View style={styles.container}>
       {/* Hidden DiaryCard for image capture */}
       <View style={styles.hiddenCard} pointerEvents="none">
-        <DiaryCard ref={cardRef} entry={currentEntry} folder={currentFolder} />
+        <DiaryCard ref={cardRef} entry={currentEntry} avatarUri={settings.avatarUri} nickname={settings.nickname} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
         {/* Folder selector */}
         <TouchableOpacity style={styles.folderSelector} onPress={() => setShowFolderPicker(!showFolderPicker)}>
           <MaterialIcons
             name={folderId ? (folders.find((f) => f.id === folderId)?.icon as any) || 'folder' : 'inbox'}
             size={18}
-            color={folderId ? folders.find((f) => f.id === folderId)?.color || '#007AFF' : '#999'}
+            color={folderId ? folders.find((f) => f.id === folderId)?.color || colors.primary : colors.checkbox}
           />
           <Text style={styles.folderSelectorText}>{currentFolderName}</Text>
-          <MaterialIcons name={showFolderPicker ? 'expand-less' : 'expand-more'} size={20} color="#999" />
+          <MaterialIcons name={showFolderPicker ? 'expand-less' : 'expand-more'} size={20} color={colors.checkbox} />
         </TouchableOpacity>
 
         {showFolderPicker && (
@@ -231,9 +498,9 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
               style={[styles.folderPickerItem, folderId === null && styles.folderPickerItemActive]}
               onPress={() => { setFolderId(null); setShowFolderPicker(false); }}
             >
-              <MaterialIcons name="inbox" size={18} color="#999" />
+              <MaterialIcons name="inbox" size={18} color={colors.checkbox} />
               <Text style={styles.folderPickerText}>未分类</Text>
-              {folderId === null && <MaterialIcons name="check" size={18} color="#007AFF" />}
+              {folderId === null && <MaterialIcons name="check" size={18} color={colors.primary} />}
             </TouchableOpacity>
             {folders.map((f) => (
               <TouchableOpacity
@@ -243,7 +510,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
               >
                 <MaterialIcons name={f.icon as any} size={18} color={f.color} />
                 <Text style={styles.folderPickerText}>{f.name}</Text>
-                {folderId === f.id && <MaterialIcons name="check" size={18} color="#007AFF" />}
+                {folderId === f.id && <MaterialIcons name="check" size={18} color={colors.primary} />}
               </TouchableOpacity>
             ))}
           </View>
@@ -252,25 +519,42 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         <TextInput
           style={styles.titleInput}
           placeholder="标题（可选）"
+          placeholderTextColor={colors.placeholder}
           value={title}
           onChangeText={setTitle}
           editable={!isSaving}
+          blurOnSubmit={false}
+          onFocus={() => setIsEditing(true)}
+          onBlur={() => setIsEditing(false)}
         />
         <TextInput
           style={styles.contentInput}
           placeholder="记录你的思绪..."
+          placeholderTextColor={colors.placeholder}
           value={content}
           onChangeText={setContent}
           editable={!isSaving}
           multiline
           textAlignVertical="top"
+          blurOnSubmit={false}
+          onFocus={() => setIsEditing(true)}
+          onBlur={() => setIsEditing(false)}
         />
+        {!isEditing && (
+          <Text style={styles.updatedAtLabel}>
+            -- {format(new Date(loadedUpdatedAt || new Date()), 'MM/dd HH:mm')}
+          </Text>
+        )}
         <TextInput
           style={styles.tagsInput}
           placeholder="标签（逗号分隔，如：生活 感悟）"
+          placeholderTextColor={colors.placeholder}
           value={tagsText}
           onChangeText={setTagsText}
           editable={!isSaving}
+          blurOnSubmit={false}
+          onFocus={() => setIsEditing(true)}
+          onBlur={() => setIsEditing(false)}
         />
       </ScrollView>
 
@@ -297,7 +581,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.exportOption} onPress={handleExportHtml}>
-              <MaterialIcons name="web" size={28} color="#007AFF" />
+              <MaterialIcons name="web" size={28} color={colors.primary} />
               <View style={styles.exportOptionText}>
                 <Text style={styles.exportOptionTitle}>导出网页</Text>
                 <Text style={styles.exportOptionDesc}>导出 HTML 文件，可在浏览器查看</Text>
@@ -316,152 +600,5 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-  },
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 32,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  headerButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  folderSelector: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
-    marginBottom: 12,
-    gap: 8,
-  },
-  folderSelectorText: {
-    flex: 1,
-    fontSize: 14,
-    color: '#333',
-  },
-  folderPicker: {
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    borderRadius: 8,
-    marginBottom: 12,
-    overflow: 'hidden',
-  },
-  folderPickerItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    gap: 8,
-    borderBottomWidth: 0.5,
-    borderBottomColor: '#f0f0f0',
-  },
-  folderPickerItemActive: {
-    backgroundColor: '#f0f7ff',
-  },
-  folderPickerText: {
-    flex: 1,
-    fontSize: 14,
-    color: '#333',
-  },
-  titleInput: {
-    fontSize: 24,
-    fontWeight: '700',
-    marginBottom: 15,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eceff3',
-    color: '#222',
-  },
-  contentInput: {
-    fontSize: 16,
-    lineHeight: 24,
-    minHeight: 280,
-    marginBottom: 16,
-    color: '#333',
-  },
-  tagsInput: {
-    fontSize: 14,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#eceff3',
-    borderBottomWidth: 1,
-    borderBottomColor: '#eceff3',
-    color: '#444',
-  },
-  hiddenCard: {
-    position: 'absolute',
-    left: -9999,
-    top: -9999,
-    opacity: 0,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 24,
-    width: '100%',
-    maxWidth: 400,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#222',
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  exportOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 12,
-    marginBottom: 10,
-    gap: 12,
-  },
-  exportOptionText: {
-    flex: 1,
-  },
-  exportOptionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#222',
-  },
-  exportOptionDesc: {
-    fontSize: 13,
-    color: '#888',
-    marginTop: 2,
-  },
-  modalButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalButtonCancel: {
-    backgroundColor: '#f0f0f0',
-  },
-  modalButtonText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#333',
-  },
-});
 
 export default DiaryDetailScreen;

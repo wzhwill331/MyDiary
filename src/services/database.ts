@@ -26,6 +26,7 @@ type DiaryEntryRow = {
   createdAt: string | null;
   updatedAt: string | null;
   tags: string | null;
+  isPinned: number | null;
 };
 
 type DiaryFolderRow = {
@@ -70,6 +71,7 @@ const rowToDiaryEntry = (row: DiaryEntryRow): DiaryEntry => ({
   createdAt: row.createdAt ?? new Date(0).toISOString(),
   updatedAt: row.updatedAt ?? row.createdAt ?? new Date(0).toISOString(),
   tags: parseTags(row.tags),
+  isPinned: row.isPinned === 1,
 });
 
 const rowToDiaryFolder = (row: DiaryFolderRow): DiaryFolder => ({
@@ -173,6 +175,20 @@ export const initDatabase = async () => {
   } catch {
     // Column already exists, ignore
   }
+
+  // Migration: add deletedAt column for soft delete
+  try {
+    await database.execAsync(`ALTER TABLE diary_entries ADD COLUMN deletedAt TEXT;`);
+  } catch {
+    // Column already exists, ignore
+  }
+
+  // Migration: add isPinned column
+  try {
+    await database.execAsync(`ALTER TABLE diary_entries ADD COLUMN isPinned INTEGER DEFAULT 0;`);
+  } catch {
+    // Column already exists, ignore
+  }
 };
 
 // ==================== Folder CRUD ====================
@@ -255,19 +271,17 @@ export const listEntries = async (folderId?: string | null): Promise<DiaryEntry[
   await initDatabase();
   const database = await openDatabase();
 
-  let query = 'SELECT id, title, content, folderId, createdAt, updatedAt, tags FROM diary_entries';
+  let query = 'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned FROM diary_entries WHERE deletedAt IS NULL';
   const params: string[] = [];
 
   if (folderId === null) {
-    // Entries without folder
-    query += ' WHERE folderId IS NULL';
+    query += ' AND folderId IS NULL';
   } else if (folderId !== undefined) {
-    // Entries in specific folder
-    query += ' WHERE folderId = ?';
+    query += ' AND folderId = ?';
     params.push(folderId);
   }
 
-  query += ' ORDER BY updatedAt DESC, createdAt DESC';
+  query += ' ORDER BY isPinned DESC, updatedAt DESC, createdAt DESC';
 
   const rows = await database.getAllAsync<DiaryEntryRow>(query, params);
   return rows.map(rowToDiaryEntry);
@@ -281,9 +295,9 @@ export const searchEntries = async (query: string, folderId?: string | null): Pr
   const database = await openDatabase();
   const likeQuery = `%${trimmedQuery}%`;
 
-  let sql = `SELECT id, title, content, folderId, createdAt, updatedAt, tags
+  let sql = `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned
      FROM diary_entries
-     WHERE (title LIKE ? OR content LIKE ? OR tags LIKE ?)`;
+     WHERE deletedAt IS NULL AND (title LIKE ? OR content LIKE ? OR tags LIKE ?)`;
   const params: string[] = [likeQuery, likeQuery, likeQuery];
 
   if (folderId === null) {
@@ -293,7 +307,7 @@ export const searchEntries = async (query: string, folderId?: string | null): Pr
     params.push(folderId);
   }
 
-  sql += ' ORDER BY updatedAt DESC, createdAt DESC';
+  sql += ' ORDER BY isPinned DESC, updatedAt DESC, createdAt DESC';
 
   const rows = await database.getAllAsync<DiaryEntryRow>(sql, params);
   return rows.map(rowToDiaryEntry);
@@ -303,7 +317,7 @@ export const getEntryById = async (id: string): Promise<DiaryEntry | undefined> 
   await initDatabase();
   const database = await openDatabase();
   const row = await database.getFirstAsync<DiaryEntryRow>(
-    'SELECT id, title, content, folderId, createdAt, updatedAt, tags FROM diary_entries WHERE id = ?',
+    'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned FROM diary_entries WHERE id = ?',
     [id]
   );
   return row ? rowToDiaryEntry(row) : undefined;
@@ -359,7 +373,107 @@ export const updateEntry = async (id: string, input: DiaryEntryInput): Promise<D
 export const deleteEntry = async (id: string): Promise<void> => {
   await initDatabase();
   const database = await openDatabase();
+  await database.runAsync('UPDATE diary_entries SET deletedAt = ? WHERE id = ?', [new Date().toISOString(), id]);
+};
+
+export const restoreEntry = async (id: string): Promise<void> => {
+  await initDatabase();
+  const database = await openDatabase();
+  await database.runAsync('UPDATE diary_entries SET deletedAt = NULL WHERE id = ?', [id]);
+};
+
+export const permanentDeleteEntry = async (id: string): Promise<void> => {
+  await initDatabase();
+  const database = await openDatabase();
   await database.runAsync('DELETE FROM diary_entries WHERE id = ?', [id]);
+};
+
+export const getDiaryStats = async (): Promise<{ totalEntries: number; monthEntries: number; totalChars: number; streak: number }> => {
+  await initDatabase();
+  const database = await openDatabase();
+
+  // Total entries
+  const totalRow = await database.getFirstAsync<{ cnt: number }>(
+    'SELECT COUNT(*) as cnt FROM diary_entries WHERE deletedAt IS NULL'
+  );
+  const totalEntries = totalRow?.cnt ?? 0;
+
+  // This month entries
+  const now = new Date();
+  const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const monthRow = await database.getFirstAsync<{ cnt: number }>(
+    'SELECT COUNT(*) as cnt FROM diary_entries WHERE deletedAt IS NULL AND (createdAt LIKE ? OR updatedAt LIKE ?)',
+    [`${monthPrefix}%`, `${monthPrefix}%`]
+  );
+  const monthEntries = monthRow?.cnt ?? 0;
+
+  // Total characters
+  const charsRow = await database.getFirstAsync<{ total: number }>(
+    'SELECT SUM(LENGTH(content)) as total FROM diary_entries WHERE deletedAt IS NULL'
+  );
+  const totalChars = charsRow?.total ?? 0;
+
+  // Streak: count consecutive days with entries (from today backwards)
+  const allRows = await database.getAllAsync<{ day: string }>(
+    `SELECT DISTINCT substr(createdAt, 1, 10) as day FROM diary_entries WHERE deletedAt IS NULL ORDER BY day DESC`
+  );
+  const days = new Set(allRows.map((r) => r.day));
+  let streak = 0;
+  const d = new Date();
+  while (true) {
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (days.has(key)) {
+      streak++;
+      d.setDate(d.getDate() - 1);
+    } else {
+      break;
+    }
+  }
+
+  return { totalEntries, monthEntries, totalChars, streak };
+};
+
+export const listEntriesByDate = async (dateStr: string): Promise<DiaryEntry[]> => {
+  await initDatabase();
+  const database = await openDatabase();
+  const rows = await database.getAllAsync<DiaryEntryRow>(
+    `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned FROM diary_entries
+     WHERE deletedAt IS NULL AND (createdAt LIKE ? OR updatedAt LIKE ?)
+     ORDER BY updatedAt DESC`,
+    [`${dateStr}%`, `${dateStr}%`]
+  );
+  return rows.map(rowToDiaryEntry);
+};
+
+export const togglePinEntry = async (id: string): Promise<void> => {
+  await initDatabase();
+  const database = await openDatabase();
+  await database.runAsync('UPDATE diary_entries SET isPinned = CASE WHEN isPinned = 1 THEN 0 ELSE 1 END WHERE id = ?', [id]);
+};
+
+export const listTrashedEntries = async (): Promise<DiaryEntry[]> => {
+  await initDatabase();
+  const database = await openDatabase();
+  const rows = await database.getAllAsync<{ id: string; title: string | null; content: string | null; folderId: string | null; createdAt: string | null; updatedAt: string | null; tags: string | null; deletedAt: string | null; isPinned: number | null }>(
+    'SELECT id, title, content, folderId, createdAt, updatedAt, tags, deletedAt, isPinned FROM diary_entries WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC'
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title ?? '',
+    content: row.content ?? '',
+    folderId: row.folderId ?? null,
+    createdAt: row.createdAt ?? new Date().toISOString(),
+    updatedAt: row.updatedAt ?? new Date().toISOString(),
+    tags: row.tags ? JSON.parse(row.tags) : [],
+    deletedAt: row.deletedAt ?? null,
+    isPinned: row.isPinned === 1,
+  }));
+};
+
+export const emptyTrash = async (): Promise<void> => {
+  await initDatabase();
+  const database = await openDatabase();
+  await database.runAsync('DELETE FROM diary_entries WHERE deletedAt IS NOT NULL');
 };
 
 export const deleteEntries = async (ids: string[]): Promise<void> => {
@@ -367,7 +481,7 @@ export const deleteEntries = async (ids: string[]): Promise<void> => {
   await initDatabase();
   const database = await openDatabase();
   const placeholders = ids.map(() => '?').join(', ');
-  await database.runAsync(`DELETE FROM diary_entries WHERE id IN (${placeholders})`, ids);
+  await database.runAsync(`UPDATE diary_entries SET deletedAt = ? WHERE id IN (${placeholders})`, [new Date().toISOString(), ...ids]);
 };
 
 export const moveEntriesToFolder = async (ids: string[], folderId: string | null): Promise<void> => {
@@ -451,6 +565,13 @@ export type DatabaseApi = {
   updateEntry: typeof updateEntry;
   deleteEntry: typeof deleteEntry;
   deleteEntries: typeof deleteEntries;
+  restoreEntry: typeof restoreEntry;
+  permanentDeleteEntry: typeof permanentDeleteEntry;
+  togglePinEntry: typeof togglePinEntry;
+  listTrashedEntries: typeof listTrashedEntries;
+  listEntriesByDate: typeof listEntriesByDate;
+  getDiaryStats: typeof getDiaryStats;
+  emptyTrash: typeof emptyTrash;
   moveEntriesToFolder: typeof moveEntriesToFolder;
   exportEntries: typeof exportEntries;
   importEntries: typeof importEntries;
@@ -469,6 +590,13 @@ const databaseApi: DatabaseApi = {
   updateEntry,
   deleteEntry,
   deleteEntries,
+  restoreEntry,
+  permanentDeleteEntry,
+  togglePinEntry,
+  listTrashedEntries,
+  listEntriesByDate,
+  getDiaryStats,
+  emptyTrash,
   moveEntriesToFolder,
   exportEntries,
   importEntries,

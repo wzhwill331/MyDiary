@@ -15,6 +15,8 @@ export type DiaryEntry = {
   createdAt: string;
   updatedAt: string;
   tags: string[];
+  isPinned?: boolean;
+  deletedAt?: string | null;
 };
 
 export type DiaryBackup = {

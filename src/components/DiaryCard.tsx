@@ -1,31 +1,34 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
 import { format } from 'date-fns';
 import { MaterialIcons } from '@expo/vector-icons';
-import { DiaryEntry, DiaryFolder } from '../types/diary';
+import { DiaryEntry } from '../types/diary';
 
 type DiaryCardProps = {
   entry: DiaryEntry;
-  folder?: DiaryFolder | null;
+  avatarUri?: string | null;
+  nickname?: string;
 };
 
-const DiaryCard = React.forwardRef<View, DiaryCardProps>(({ entry, folder }, ref) => {
+const DiaryCard = React.forwardRef<View, DiaryCardProps>(({ entry, avatarUri, nickname }, ref) => {
   const date = new Date(entry.createdAt);
   const dateStr = format(date, 'yyyy年MM月dd日 HH:mm');
 
   return (
     <View ref={ref} style={styles.card} collapsable={false}>
-      {/* Header */}
+      {/* Header with avatar and nickname */}
       <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Text style={styles.appName}>📖 MyDiary</Text>
+        <View style={styles.userInfo}>
+          {avatarUri ? (
+            <Image source={{ uri: avatarUri }} style={styles.avatar} />
+          ) : (
+            <View style={styles.avatarPlaceholder}>
+              <Text style={styles.avatarInitial}>{(nickname || 'A').charAt(0).toUpperCase()}</Text>
+            </View>
+          )}
+          <Text style={styles.nickname}>{nickname || '匿名'}</Text>
         </View>
-        {folder && (
-          <View style={[styles.folderBadge, { backgroundColor: folder.color + '20' }]}>
-            <MaterialIcons name={folder.icon as any} size={14} color={folder.color} />
-            <Text style={[styles.folderName, { color: folder.color }]}>{folder.name}</Text>
-          </View>
-        )}
+        <Text style={styles.appName}>📖 MyDiary</Text>
       </View>
 
       {/* Title */}
@@ -45,7 +48,7 @@ const DiaryCard = React.forwardRef<View, DiaryCardProps>(({ entry, folder }, ref
         <View style={styles.tagsContainer}>
           {entry.tags.map((tag, index) => (
             <View key={index} style={styles.tag}>
-              <Text style={styles.tagText}>{tag}</Text>
+              <Text style={styles.tagText}>#{tag}</Text>
             </View>
           ))}
         </View>
@@ -67,7 +70,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
     borderRadius: 16,
     padding: 28,
-    // Shadow for the card itself
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.1,
@@ -83,26 +85,37 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
   },
-  headerLeft: {
+  userInfo: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 10,
+  },
+  avatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+  },
+  avatarPlaceholder: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#f0f2f5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarInitial: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#999',
+  },
+  nickname: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#333',
   },
   appName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#666',
-  },
-  folderBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    gap: 4,
-  },
-  folderName: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 14,
+    color: '#bbb',
   },
   title: {
     fontSize: 26,
