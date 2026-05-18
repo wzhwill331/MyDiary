@@ -17,9 +17,10 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { v4 as uuidv4 } from 'uuid';
 import { RootStackParamList } from '../../App';
 import { useDatabase } from '../services/database';
+import { hasPassword, verifyPassword, getLockedFolderIds, setFolderLocked as saveFolderLocked, isFolderLocked } from '../services/password';
 import { useSettings } from '../services/settings';
 import { useThemeColors, getFontFamily, ThemeColors } from '../services/theme';
-import { DiaryEntry, DiaryFolder } from '../types/diary';
+import { DiaryEntry, DiaryFolder, MOOD_OPTIONS } from '../types/diary';
 import { exportDiaryEntriesToJson, exportDiaryEntriesToHtml, exportDiaryEntriesToMarkdown, importDiaryEntriesFromJson } from '../utils/export';
 
 type DiaryListScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'DiaryList'>;
@@ -30,6 +31,10 @@ const FOLDER_ICONS = ['folder', 'school', 'work', 'favorite', 'star', 'home', 'f
 const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily: string }) => StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: colors.background,
+  },
+  fixedHeader: {
+    zIndex: 20,
     backgroundColor: colors.background,
   },
   headerActions: {
@@ -46,35 +51,38 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     borderWidth: 1,
     borderRadius: 8,
     paddingHorizontal: 12,
-    margin: 12,
-    marginBottom: 0,
+    marginHorizontal: 12,
+    marginTop: 12,
+    marginBottom: 8,
     backgroundColor: colors.card,
     fontSize: settings.fontSize,
     fontFamily: getFontFamily(settings.fontFamily),
   },
   folderTabs: {
-    maxHeight: 48,
     marginBottom: 4,
+    paddingVertical: 4,
   },
   folderTabsContent: {
     paddingHorizontal: 12,
+    paddingEnd: 24,
     alignItems: 'center',
     gap: 8,
   },
   folderTab: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 20,
     backgroundColor: colors.card,
-    gap: 4,
+    gap: 6,
+    minHeight: 48,
   },
   folderTabActive: {
     backgroundColor: colors.selectedBg,
   },
   folderTabText: {
-    fontSize: 13,
+    fontSize: 14,
     color: colors.textTertiary,
     fontFamily: getFontFamily(settings.fontFamily),
   },
@@ -181,33 +189,28 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     textAlign: 'right',
     opacity: 0.6,
   },
-  tagFilterBar: {
-    maxHeight: 44,
-    marginBottom: 4,
+
+  lockOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10,
   },
-  tagFilterContent: {
-    paddingHorizontal: 12,
+  lockBlur: {
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
-    gap: 8,
   },
-  tagFilterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 14,
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.border,
+  lockContent: {
+    alignItems: 'center',
+    gap: 12,
   },
-  tagFilterChipActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
+  lockText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.text,
   },
-  tagFilterText: {
-    fontSize: 13,
+  lockSubText: {
+    fontSize: 14,
     color: colors.textTertiary,
-  },
-  tagFilterTextActive: {
-    color: '#fff',
   },
   emptyText: {
     textAlign: 'center',
@@ -397,9 +400,15 @@ const DiaryListScreen = () => {
   const [folderName, setFolderName] = useState('');
   const [folderColor, setFolderColor] = useState(FOLDER_COLORS[0]);
   const [folderIcon, setFolderIcon] = useState(FOLDER_ICONS[0]);
+  const [folderLocked, setFolderLocked] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportTargetIds, setExportTargetIds] = useState<string[] | null>(null);
-  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [showPasswordVerify, setShowPasswordVerify] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [lockedFolderIds, setLockedFolderIds] = useState<string[]>([]);
+  const [userHasPassword, setUserHasPassword] = useState(false);
+  const [unlockedIds, setUnlockedIds] = useState<Set<string>>(new Set());
+
 
   const database = useDatabase();
   const navigation = useNavigation<DiaryListScreenNavigationProp>();
@@ -408,15 +417,40 @@ const DiaryListScreen = () => {
 
   const styles = useStyles(colors, settings);
 
+  // Load locked folders
+  const loadLockedFolders = useCallback(async () => {
+    try {
+      const ids = await getLockedFolderIds();
+      setLockedFolderIds(ids);
+      const hp = await hasPassword();
+      setUserHasPassword(hp);
+    } catch (error) {
+      console.error('Failed to load locked folders', error);
+    }
+  }, []);
+
   const loadData = useCallback(async () => {
     try {
       setIsLoading(true);
       const folderList = await database.listFolders();
       setFolders(folderList);
 
-      const entries = searchQuery.trim()
+      let entries = searchQuery.trim()
         ? await database.searchEntries(searchQuery, activeFolderId)
         : await database.listEntries(activeFolderId);
+
+      // Filter out entries from locked folders (unless viewing that specific folder)
+      const lockedIds = await getLockedFolderIds();
+      if (lockedIds.length > 0) {
+        entries = entries.filter((e) => {
+          if (!e.folderId) return true;
+          if (lockedIds.includes(e.folderId) && !unlockedIds.has(e.folderId)) {
+            return false;
+          }
+          return true;
+        });
+      }
+
       setDiaryEntries(entries);
     } catch (error) {
       console.error('Failed to load data', error);
@@ -424,18 +458,24 @@ const DiaryListScreen = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [database, searchQuery, activeFolderId]);
+  }, [database, searchQuery, activeFolderId, unlockedIds]);
 
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [loadData])
+      loadLockedFolders();
+    }, [loadData, loadLockedFolders])
   );
 
   useEffect(() => {
     const timeoutId = setTimeout(loadData, 300);
     return () => clearTimeout(timeoutId);
   }, [loadData]);
+
+  // Clear unlocked state when switching folders
+  useEffect(() => {
+    setUnlockedIds(new Set());
+  }, [activeFolderId]);
 
   // Exit select mode when navigating away
   useEffect(() => {
@@ -530,14 +570,17 @@ const DiaryListScreen = () => {
     setFolderName('');
     setFolderColor(FOLDER_COLORS[0]);
     setFolderIcon(FOLDER_ICONS[0]);
+    setFolderLocked(false);
     setShowFolderModal(true);
   };
 
-  const openEditFolder = (folder: DiaryFolder) => {
+  const openEditFolder = async (folder: DiaryFolder) => {
     setEditingFolder(folder);
     setFolderName(folder.name);
     setFolderColor(folder.color);
     setFolderIcon(folder.icon);
+    const locked = await isFolderLocked(folder.id);
+    setFolderLocked(locked);
     setShowFolderModal(true);
   };
 
@@ -550,9 +593,13 @@ const DiaryListScreen = () => {
     try {
       if (editingFolder) {
         await database.updateFolder(editingFolder.id, { name: folderName, color: folderColor, icon: folderIcon });
+        await saveFolderLocked(editingFolder.id, folderLocked);
       } else {
-        await database.createFolder(uuidv4(), { name: folderName, color: folderColor, icon: folderIcon });
+        const newId = uuidv4();
+        await database.createFolder(newId, { name: folderName, color: folderColor, icon: folderIcon });
+        if (folderLocked) await saveFolderLocked(newId, true);
       }
+      await loadLockedFolders();
       setShowFolderModal(false);
       await loadData();
     } catch (error) {
@@ -611,18 +658,7 @@ const DiaryListScreen = () => {
     }
   };
 
-  // Collect all unique tags from entries
-  const allTags = React.useMemo(() => {
-    const tagSet = new Set<string>();
-    diaryEntries.forEach((e) => e.tags.forEach((t) => tagSet.add(t)));
-    return Array.from(tagSet).sort();
-  }, [diaryEntries]);
 
-  // Filter entries by active tag
-  const filteredEntries = React.useMemo(() => {
-    if (!activeTag) return diaryEntries;
-    return diaryEntries.filter((e) => e.tags.includes(activeTag));
-  }, [diaryEntries, activeTag]);
 
   // ==================== Header ====================
 
@@ -724,6 +760,7 @@ const DiaryListScreen = () => {
         <View style={styles.entryContent}>
           <View style={styles.entryTitleRow}>
             {item.isPinned && <MaterialIcons name="push-pin" size={14} color={colors.primary} style={styles.pinIcon} />}
+            {item.mood && <Text style={{ fontSize: 16, marginRight: 4 }}>{MOOD_OPTIONS.find((m) => m.emoji === item.mood)?.emoji}</Text>}
             <Text style={[styles.entryTitle, { fontSize: settings.fontSize + 2 }]} numberOfLines={1}>{item.title || '无标题'}</Text>
           </View>
           <Text style={styles.entryDate}>{format(new Date(item.updatedAt), 'yyyy年MM月dd日 HH:mm')}</Text>
@@ -778,6 +815,7 @@ const DiaryListScreen = () => {
           onLongPress={() => openEditFolder(folder)}
         >
           <MaterialIcons name={folder.icon as any} size={18} color={folder.color} />
+          {lockedFolderIds.includes(folder.id) && <MaterialIcons name="lock" size={12} color={colors.placeholder} style={{ marginLeft: 2 }} />}
           <Text style={[styles.folderTabText, { color: folder.color }]}>{folder.name}</Text>
         </TouchableOpacity>
       ))}
@@ -788,6 +826,49 @@ const DiaryListScreen = () => {
   );
 
   // ==================== Folder Modal ====================
+
+  const handlePasswordVerify = async () => {
+    const ok = await verifyPassword(passwordInput);
+    if (ok && activeFolderId) {
+      setShowPasswordVerify(false);
+      const newUnlocked = new Set(unlockedIds).add(activeFolderId);
+      setUnlockedIds(newUnlocked);
+      setPasswordInput('');
+      // Reload data to show entries from newly unlocked folder
+      setTimeout(() => loadData(), 100);
+    } else {
+      Alert.alert('错误', '密码错误。');
+    }
+  };
+
+  const isCurrentFolderLocked = activeFolderId !== undefined && activeFolderId !== null && lockedFolderIds.includes(activeFolderId) && !unlockedIds.has(activeFolderId);
+
+  const renderPasswordVerifyModal = () => (
+    <Modal visible={showPasswordVerify} transparent animationType="fade">
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          <Text style={styles.modalTitle}>输入密码解锁</Text>
+          <TextInput
+            style={styles.modalInput}
+            placeholder="密码"
+            placeholderTextColor={colors.placeholder}
+            value={passwordInput}
+            onChangeText={setPasswordInput}
+            secureTextEntry
+            autoFocus
+          />
+          <View style={styles.modalActions}>
+            <TouchableOpacity style={styles.modalBtnCancelSmall} onPress={() => { setShowPasswordVerify(false); setPasswordInput(''); }}>
+              <Text style={styles.modalBtnCancelSmallText}>取消</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.modalBtnConfirm} onPress={handlePasswordVerify}>
+              <Text style={styles.modalBtnConfirmText}>解锁</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
 
   const renderFolderModal = () => (
     <Modal visible={showFolderModal} transparent animationType="fade">
@@ -826,6 +907,22 @@ const DiaryListScreen = () => {
               </TouchableOpacity>
             ))}
           </View>
+
+          {editingFolder && userHasPassword && (
+            <>
+              <Text style={styles.modalLabel}>锁定</Text>
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.input, marginBottom: 12 }}
+                onPress={() => setFolderLocked(!folderLocked)}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <MaterialIcons name={folderLocked ? 'lock' : 'lock-open'} size={20} color={folderLocked ? colors.primary : colors.textTertiary} />
+                  <Text style={{ fontSize: 15, color: colors.text }}>{folderLocked ? '已锁定' : '未锁定'}</Text>
+                </View>
+                <MaterialIcons name={folderLocked ? 'toggle-on' : 'toggle-off'} size={32} color={folderLocked ? colors.primary : colors.placeholder} />
+              </TouchableOpacity>
+            </>
+          )}
 
           <View style={styles.modalActions}>
             {editingFolder && (
@@ -917,49 +1014,44 @@ const DiaryListScreen = () => {
   return (
     <View style={styles.container}>
       {!isSelectMode && (
-        <TextInput
-          style={styles.searchInput}
-          placeholder="搜索标题、正文或标签"
-          placeholderTextColor={colors.placeholder}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          returnKeyType="search"
-        />
+        <View style={styles.fixedHeader}>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="搜索标题、正文或标签"
+            placeholderTextColor={colors.placeholder}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            returnKeyType="search"
+          />
+          {renderFolderTabs()}
+        </View>
       )}
-      {renderFolderTabs()}
-      {allTags.length > 0 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tagFilterBar} contentContainerStyle={styles.tagFilterContent}>
-          <TouchableOpacity
-            style={[styles.tagFilterChip, !activeTag && styles.tagFilterChipActive]}
-            onPress={() => setActiveTag(null)}
-          >
-            <Text style={[styles.tagFilterText, !activeTag && styles.tagFilterTextActive]}>全部标签</Text>
-          </TouchableOpacity>
-          {allTags.map((tag) => (
-            <TouchableOpacity
-              key={tag}
-              style={[styles.tagFilterChip, activeTag === tag && styles.tagFilterChipActive]}
-              onPress={() => setActiveTag(activeTag === tag ? null : tag)}
-            >
-              <Text style={[styles.tagFilterText, activeTag === tag && styles.tagFilterTextActive]}>#{tag}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      )}
+
       <FlatList
-        data={filteredEntries}
+        data={diaryEntries}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         refreshing={isLoading}
         onRefresh={loadData}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={filteredEntries.length === 0 ? styles.emptyList : styles.listContent}
+        contentContainerStyle={diaryEntries.length === 0 ? styles.emptyList : styles.listContent}
         ListEmptyComponent={
           <Text style={styles.emptyText}>
-            {searchQuery.trim() ? '没有匹配的日记。' : activeFolderId !== undefined ? '这个日记夹里还没有日记。' : activeTag ? `没有标签为「${activeTag}」的日记。` : '还没有日记，点右下角开始记录。'}
+            {searchQuery.trim() ? '没有匹配的日记。' : activeFolderId !== undefined ? '这个日记夹里还没有日记。' : '还没有日记，点右下角开始记录。'}
           </Text>
         }
       />
+      {isCurrentFolderLocked && (
+        <View style={styles.lockOverlay}>
+          <View style={[styles.lockBlur, { backgroundColor: colors.background }]}>
+            <TouchableOpacity style={styles.lockContent} onPress={() => setShowPasswordVerify(true)}>
+              <MaterialIcons name="lock" size={48} color={colors.primary} />
+              <Text style={styles.lockText}>此文件夹已锁定</Text>
+              <Text style={styles.lockSubText}>点击输入密码解锁</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
       {renderSelectModeBar()}
       {!isSelectMode && (
         <TouchableOpacity
@@ -972,6 +1064,7 @@ const DiaryListScreen = () => {
       )}
       {renderFolderModal()}
       {renderExportModal()}
+      {renderPasswordVerifyModal()}
     </View>
   );
 };

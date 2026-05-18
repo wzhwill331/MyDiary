@@ -2,7 +2,7 @@ import React from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { format } from 'date-fns';
 import { MaterialIcons } from '@expo/vector-icons';
-import { DiaryEntry } from '../types/diary';
+import { DiaryEntry, MOOD_OPTIONS } from '../types/diary';
 
 type DiaryCardProps = {
   entry: DiaryEntry;
@@ -32,7 +32,10 @@ const DiaryCard = React.forwardRef<View, DiaryCardProps>(({ entry, avatarUri, ni
       </View>
 
       {/* Title */}
-      <Text style={styles.title}>{entry.title || '无标题'}</Text>
+      <View style={styles.titleRow}>
+        {entry.mood && <Text style={styles.moodEmoji}>{MOOD_OPTIONS.find((m) => m.emoji === entry.mood)?.emoji}</Text>}
+        <Text style={styles.title}>{entry.title || '无标题'}</Text>
+      </View>
 
       {/* Date */}
       <View style={styles.dateRow}>
@@ -117,11 +120,19 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#bbb',
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 6,
+  },
+  moodEmoji: {
+    fontSize: 22,
+  },
   title: {
     fontSize: 26,
     fontWeight: '800',
     color: '#1a1a1a',
-    marginBottom: 10,
     lineHeight: 34,
   },
   dateRow: {

@@ -17,7 +17,16 @@
     "plugins": [
       "expo-asset",
       "expo-font",
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "softInputMode": "adjustResize"
+          }
+        }
+      ],
+      "expo-secure-store"
     ]
   }
 }

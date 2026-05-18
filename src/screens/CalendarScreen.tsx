@@ -8,7 +8,7 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useDatabase } from '../services/database';
 import { useThemeColors } from '../services/theme';
-import { DiaryEntry } from '../types/diary';
+import { DiaryEntry, MOOD_OPTIONS } from '../types/diary';
 
 type Props = {
   navigation: NativeStackNavigationProp<any>;
@@ -26,6 +26,7 @@ const CalendarScreen = ({ navigation }: Props) => {
   const monthScrollRef = useRef<ScrollView>(null);
   const [entries, setEntries] = useState<DiaryEntry[]>([]);
   const [dateEntryMap, setDateEntryMap] = useState<Record<string, number>>({});
+  const [dateMoodMap, setDateMoodMap] = useState<Record<string, string>>({});
   const database = useDatabase();
   const colors = useThemeColors();
   const insets = useSafeAreaInsets();
@@ -34,16 +35,24 @@ const CalendarScreen = ({ navigation }: Props) => {
     try {
       const allEntries = await database.listEntries();
       const map: Record<string, number> = {};
+      const moodMap: Record<string, string> = {};
       for (const entry of allEntries) {
         const dateKey = format(new Date(entry.createdAt), 'yyyy-MM-dd');
         map[dateKey] = (map[dateKey] || 0) + 1;
+        if (entry.mood) {
+          moodMap[dateKey] = entry.mood;
+        }
         // Also count if updatedAt is different day
         const updateKey = format(new Date(entry.updatedAt), 'yyyy-MM-dd');
         if (updateKey !== dateKey) {
           map[updateKey] = (map[updateKey] || 0) + 1;
+          if (entry.mood) {
+            moodMap[updateKey] = entry.mood;
+          }
         }
       }
       setDateEntryMap(map);
+      setDateMoodMap(moodMap);
     } catch (error) {
       console.error('Failed to load month data', error);
     }
@@ -201,8 +210,8 @@ const CalendarScreen = ({ navigation }: Props) => {
                 {format(day, 'd')}
               </Text>
               {count > 0 && (
-                <View style={[styles.dayDot, isSelected && styles.dayDotSelected]}>
-                  <Text style={[styles.dayDotText, isSelected && styles.dayDotTextSelected]}>
+                <View style={[styles.dayDot, isSelected && styles.dayDotSelected, !isSelected && dateMoodMap[dateKey] ? { backgroundColor: MOOD_OPTIONS.find((m) => m.emoji === dateMoodMap[dateKey])?.color + '40' } : {}]}>
+                  <Text style={[styles.dayDotText, isSelected && styles.dayDotTextSelected, !isSelected && dateMoodMap[dateKey] ? { color: MOOD_OPTIONS.find((m) => m.emoji === dateMoodMap[dateKey])?.color } : {}]}>
                     {count}
                   </Text>
                 </View>

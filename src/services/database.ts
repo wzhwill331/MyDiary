@@ -10,6 +10,8 @@ export type DiaryEntryInput = {
   content: string;
   tags: string[];
   folderId: string | null;
+  mood?: string | null;
+  imageUris?: string[];
 };
 
 export type DiaryFolderInput = {
@@ -27,6 +29,8 @@ type DiaryEntryRow = {
   updatedAt: string | null;
   tags: string | null;
   isPinned: number | null;
+  mood: string | null;
+  imageUris: string | null;
 };
 
 type DiaryFolderRow = {
@@ -72,6 +76,8 @@ const rowToDiaryEntry = (row: DiaryEntryRow): DiaryEntry => ({
   updatedAt: row.updatedAt ?? row.createdAt ?? new Date(0).toISOString(),
   tags: parseTags(row.tags),
   isPinned: row.isPinned === 1,
+  mood: row.mood ?? null,
+  imageUris: row.imageUris ? JSON.parse(row.imageUris) : [],
 });
 
 const rowToDiaryFolder = (row: DiaryFolderRow): DiaryFolder => ({
@@ -189,6 +195,20 @@ export const initDatabase = async () => {
   } catch {
     // Column already exists, ignore
   }
+
+  // Migration: add mood column
+  try {
+    await database.execAsync(`ALTER TABLE diary_entries ADD COLUMN mood TEXT;`);
+  } catch {
+    // Column already exists, ignore
+  }
+
+  // Migration: add imageUris column
+  try {
+    await database.execAsync(`ALTER TABLE diary_entries ADD COLUMN imageUris TEXT;`);
+  } catch {
+    // Column already exists, ignore
+  }
 };
 
 // ==================== Folder CRUD ====================
@@ -271,7 +291,7 @@ export const listEntries = async (folderId?: string | null): Promise<DiaryEntry[
   await initDatabase();
   const database = await openDatabase();
 
-  let query = 'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned FROM diary_entries WHERE deletedAt IS NULL';
+  let query = 'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris FROM diary_entries WHERE deletedAt IS NULL';
   const params: string[] = [];
 
   if (folderId === null) {
@@ -295,7 +315,7 @@ export const searchEntries = async (query: string, folderId?: string | null): Pr
   const database = await openDatabase();
   const likeQuery = `%${trimmedQuery}%`;
 
-  let sql = `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned
+  let sql = `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris
      FROM diary_entries
      WHERE deletedAt IS NULL AND (title LIKE ? OR content LIKE ? OR tags LIKE ?)`;
   const params: string[] = [likeQuery, likeQuery, likeQuery];
@@ -317,7 +337,7 @@ export const getEntryById = async (id: string): Promise<DiaryEntry | undefined> 
   await initDatabase();
   const database = await openDatabase();
   const row = await database.getFirstAsync<DiaryEntryRow>(
-    'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned FROM diary_entries WHERE id = ?',
+    'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris FROM diary_entries WHERE id = ?',
     [id]
   );
   return row ? rowToDiaryEntry(row) : undefined;
@@ -334,12 +354,14 @@ export const createEntry = async (id: string, input: DiaryEntryInput): Promise<D
     createdAt: now,
     updatedAt: now,
     tags: input.tags,
+    mood: input.mood ?? null,
+    imageUris: input.imageUris ?? [],
   };
 
   const database = await openDatabase();
   await database.runAsync(
-    'INSERT INTO diary_entries (id, title, content, folderId, createdAt, updatedAt, tags, imageUris) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [entry.id, entry.title, entry.content, entry.folderId, entry.createdAt, entry.updatedAt, serializeTags(entry.tags), '[]']
+    'INSERT INTO diary_entries (id, title, content, folderId, createdAt, updatedAt, tags, imageUris, mood) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [entry.id, entry.title, entry.content, entry.folderId, entry.createdAt, entry.updatedAt, serializeTags(entry.tags), JSON.stringify(entry.imageUris ?? []), entry.mood ?? null]
   );
 
   return entry;
@@ -358,13 +380,15 @@ export const updateEntry = async (id: string, input: DiaryEntryInput): Promise<D
     content: input.content.trim(),
     folderId: input.folderId,
     tags: input.tags,
+    mood: input.mood ?? existing.mood ?? null,
+    imageUris: input.imageUris ?? existing.imageUris ?? [],
     updatedAt: new Date().toISOString(),
   };
 
   const database = await openDatabase();
   await database.runAsync(
-    'UPDATE diary_entries SET title = ?, content = ?, folderId = ?, updatedAt = ?, tags = ? WHERE id = ?',
-    [entry.title, entry.content, entry.folderId, entry.updatedAt, serializeTags(entry.tags), entry.id]
+    'UPDATE diary_entries SET title = ?, content = ?, folderId = ?, updatedAt = ?, tags = ?, mood = ?, imageUris = ? WHERE id = ?',
+    [entry.title, entry.content, entry.folderId, entry.updatedAt, serializeTags(entry.tags), entry.mood ?? null, JSON.stringify(entry.imageUris ?? []), entry.id]
   );
 
   return entry;
@@ -437,7 +461,7 @@ export const listEntriesByDate = async (dateStr: string): Promise<DiaryEntry[]> 
   await initDatabase();
   const database = await openDatabase();
   const rows = await database.getAllAsync<DiaryEntryRow>(
-    `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned FROM diary_entries
+    `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris FROM diary_entries
      WHERE deletedAt IS NULL AND (createdAt LIKE ? OR updatedAt LIKE ?)
      ORDER BY updatedAt DESC`,
     [`${dateStr}%`, `${dateStr}%`]
@@ -633,7 +657,7 @@ export const DatabaseProvider = ({ children }: { children: ReactNode }) => {
     return createElement(
       View,
       { style: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 } },
-      createElement(Text, { style: { color: '#b00020', textAlign: 'center' } }, `数据库初始化失败：${initError.message}`)
+      createElement(Text, { style: { color: '#b00020', textAlign: 'center' } }, `数据库初始化失败: ${initError.message}`)
     );
   }
 

@@ -18,6 +18,7 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSettings, ThemeMode } from '../services/settings';
 import { useThemeColors } from '../services/theme';
 import { useDatabase } from '../services/database';
+import { hasPassword, setPassword, verifyPassword, removePassword } from '../services/password';
 import { DiaryEntry, DiaryFolder } from '../types/diary';
 import {
   exportDiaryEntriesToJson,
@@ -58,11 +59,22 @@ const MeScreen = () => {
 
   // Selective export states
   const [showSelectModal, setShowSelectModal] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [passwordStep, setPasswordStep] = useState<'menu' | 'set' | 'verify' | 'change'>('menu');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [hasPw, setHasPw] = useState(false);
   const [selectStep, setSelectStep] = useState<SelectStep>('folder');
   const [folders, setFolders] = useState<DiaryFolder[]>([]);
   const [allEntries, setAllEntries] = useState<DiaryEntry[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState<string | 'all' | 'unfiled' | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  useFocusEffect(
+    useCallback(() => {
+      hasPassword().then(setHasPw);
+    }, [])
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -194,8 +206,69 @@ const MeScreen = () => {
     setShowExportModal(true);
   };
 
+  // ==================== Password ====================
+
+  const handlePasswordMenu = () => {
+    if (hasPw) {
+      setPasswordStep('verify');
+    } else {
+      setPasswordStep('set');
+    }
+    setPasswordInput('');
+    setPasswordConfirm('');
+    setShowPasswordModal(true);
+  };
+
+  const handleSetPassword = async () => {
+    if (passwordInput.length < 4) {
+      Alert.alert('提示', '密码至少4位。');
+      return;
+    }
+    if (passwordInput !== passwordConfirm) {
+      Alert.alert('提示', '两次输入的密码不一致。');
+      return;
+    }
+    await setPassword(passwordInput);
+    setHasPw(true);
+    setShowPasswordModal(false);
+    Alert.alert('成功', '密码设置成功。');
+  };
+
+  const handleVerifyPassword = async () => {
+    const ok = await verifyPassword(passwordInput);
+    if (ok) {
+      setPasswordStep('menu');
+      setPasswordInput('');
+    } else {
+      Alert.alert('错误', '密码错误。');
+    }
+  };
+
+  const handleChangePassword = async () => {
+    const ok = await verifyPassword(passwordInput);
+    if (!ok) {
+      Alert.alert('错误', '当前密码错误。');
+      return;
+    }
+    setPasswordStep('set');
+    setPasswordInput('');
+    setPasswordConfirm('');
+  };
+
+  const handleRemovePassword = async () => {
+    const ok = await verifyPassword(passwordInput);
+    if (!ok) {
+      Alert.alert('错误', '密码错误。');
+      return;
+    }
+    await removePassword();
+    setHasPw(false);
+    setShowPasswordModal(false);
+    Alert.alert('成功', '密码已移除，所有文件夹已解锁。');
+  };
+
   const handleAbout = () => {
-    Alert.alert('关于 MyDiary', '版本：1.2.0\n\n一款简洁优雅的日记应用\n支持 Markdown、图片、标签、分类管理', [{ text: '确定' }]);
+    Alert.alert('关于 MyDiary', '版本：1.3.0\n\n一款简洁优雅的日记应用\n支持 Markdown、图片、标签、分类管理', [{ text: '确定' }]);
   };
 
   const handleSponsor = () => {
@@ -405,6 +478,10 @@ const MeScreen = () => {
       </>)}
 
       {/* About */}
+      {renderSection('安全', <>
+        {renderSettingRow(hasPw ? '修改密码' : '设置密码', handlePasswordMenu)}
+      </>)}
+
       {renderSection('关于', <>
         {renderSettingRow('关于 MyDiary', handleAbout)}
         {renderSettingRow('赞助作者', handleSponsor)}
@@ -487,6 +564,60 @@ const MeScreen = () => {
                 <Text style={styles.modalBtnConfirmText}>保存</Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+      {/* Password Modal */}
+      <Modal visible={showPasswordModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            {passwordStep === 'verify' && (
+              <>
+                <Text style={styles.modalTitle}>验证密码</Text>
+                <TextInput style={styles.modalInput} placeholder="输入当前密码" placeholderTextColor={colors.placeholder} value={passwordInput} onChangeText={setPasswordInput} secureTextEntry autoFocus />
+                <View style={styles.modalActions}>
+                  <TouchableOpacity style={styles.modalBtnCancelSmall} onPress={() => setShowPasswordModal(false)}>
+                    <Text style={styles.modalBtnCancelSmallText}>取消</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.modalBtnConfirm} onPress={handleVerifyPassword}>
+                    <Text style={styles.modalBtnConfirmText}>验证</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+
+            {passwordStep === 'set' && (
+              <>
+                <Text style={styles.modalTitle}>{hasPw ? '修改密码' : '设置密码'}</Text>
+                <TextInput style={styles.modalInput} placeholder="输入新密码（至少4位）" placeholderTextColor={colors.placeholder} value={passwordInput} onChangeText={setPasswordInput} secureTextEntry autoFocus />
+                <TextInput style={styles.modalInput} placeholder="确认新密码" placeholderTextColor={colors.placeholder} value={passwordConfirm} onChangeText={setPasswordConfirm} secureTextEntry />
+                <View style={styles.modalActions}>
+                  <TouchableOpacity style={styles.modalBtnCancelSmall} onPress={() => { setShowPasswordModal(false); setPasswordStep('menu'); }}>
+                    <Text style={styles.modalBtnCancelSmallText}>取消</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.modalBtnConfirm} onPress={handleSetPassword}>
+                    <Text style={styles.modalBtnConfirmText}>保存</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+
+            {passwordStep === 'menu' && (
+              <>>
+                <Text style={styles.modalTitle}>密码管理</Text>
+                <TouchableOpacity style={styles.exportOption} onPress={handleChangePassword}>
+                  <MaterialIcons name="lock" size={24} color={colors.primary} />
+                  <Text style={styles.exportOptionTitle}>修改密码</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.exportOption} onPress={handleRemovePassword}>
+                  <MaterialIcons name="lock-open" size={24} color={colors.danger} />
+                  <Text style={[styles.exportOptionTitle, { color: colors.danger }]}>移除密码</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setShowPasswordModal(false)}>
+                  <Text style={styles.modalBtnCancelText}>关闭</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
       </Modal>
