@@ -28,6 +28,26 @@ export interface ThemeColors {
   statusBar: 'light' | 'dark';
 }
 
+const ACCENT_COLORS: Record<string, { light: string; dark: string }> = {
+  blue:    { light: '#007AFF', dark: '#0A84FF' },
+  indigo:  { light: '#5856D6', dark: '#5E5CE6' },
+  purple:  { light: '#AF52DE', dark: '#BF5AF2' },
+  pink:    { light: '#FF2D55', dark: '#FF375F' },
+  red:     { light: '#FF3B30', dark: '#FF453A' },
+  orange:  { light: '#FF9500', dark: '#FF9F0A' },
+  yellow:  { light: '#FFCC00', dark: '#FFD60A' },
+  green:   { light: '#34C759', dark: '#30D158' },
+  teal:    { light: '#5AC8FA', dark: '#64D2FF' },
+  cyan:    { light: '#32ADE6', dark: '#66D4E1' },
+};
+
+export const ACCENT_COLOR_OPTIONS = Object.entries(ACCENT_COLORS).map(([key, val]) => ({
+  id: key,
+  label: key.charAt(0).toUpperCase() + key.slice(1),
+  light: val.light,
+  dark: val.dark,
+}));
+
 const lightColors: ThemeColors = {
   background: '#f5f5f7',
   card: '#ffffff',
@@ -73,7 +93,17 @@ export const useThemeColors = (): ThemeColors => {
   const systemScheme = useColorScheme();
 
   const isDark = settings.theme === 'dark' || (settings.theme === 'system' && systemScheme === 'dark');
-  return isDark ? darkColors : lightColors;
+  const base = isDark ? darkColors : lightColors;
+
+  // Apply custom accent color
+  const accent = ACCENT_COLORS[settings.accentColor];
+  if (accent) {
+    return {
+      ...base,
+      primary: isDark ? accent.dark : accent.light,
+    };
+  }
+  return base;
 };
 
 export const getFontFamily = (family: string): string | undefined => {

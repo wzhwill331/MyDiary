@@ -212,6 +212,51 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     fontSize: 14,
     color: colors.textTertiary,
   },
+  onThisDaySection: {
+    marginBottom: 16,
+    paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  onThisDayHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 10,
+  },
+  onThisDayTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  onThisDayCard: {
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 8,
+    borderLeftWidth: 3,
+  },
+  onThisDayDate: {
+    fontSize: 12,
+    marginBottom: 4,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  onThisDayEntryTitle: {
+    fontSize: settings.fontSize,
+    fontWeight: '600',
+    marginBottom: 4,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  onThisDayContent: {
+    fontSize: settings.fontSize - 2,
+    lineHeight: 20,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  onThisDayMore: {
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 4,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
   emptyText: {
     textAlign: 'center',
     fontSize: settings.fontSize,
@@ -412,6 +457,7 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
 
 const DiaryListScreen = () => {
   const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
+  const [onThisDayEntries, setOnThisDayEntries] = useState<DiaryEntry[]>([]);
   const [folders, setFolders] = useState<DiaryFolder[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -478,6 +524,17 @@ const DiaryListScreen = () => {
       }
 
       setDiaryEntries(entries);
+
+      // Load "on this day" entries
+      const today = new Date();
+      const monthDay = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      const thisDayEntries = await database.listEntriesByMonthDay(monthDay);
+      // Exclude current year entries (they're already in the main list)
+      const currentYear = today.getFullYear();
+      setOnThisDayEntries(thisDayEntries.filter((e) => {
+        const year = parseInt(e.createdAt.slice(0, 4), 10);
+        return year < currentYear;
+      }));
     } catch (error) {
       console.error('Failed to load data', error);
       Alert.alert('错误', '加载数据失败。');
@@ -717,6 +774,9 @@ const DiaryListScreen = () => {
         headerLeft: undefined,
         headerRight: () => (
           <View style={styles.headerActions}>
+            <TouchableOpacity onPress={() => navigation.navigate('Timeline')} style={styles.headerButton}>
+              <MaterialIcons name="timeline" size={24} color={colors.primary} />
+            </TouchableOpacity>
             <TouchableOpacity onPress={() => setShowExportModal(true)} style={styles.headerButton}>
               <MaterialIcons name="ios-share" size={24} color={colors.primary} />
             </TouchableOpacity>
@@ -724,7 +784,7 @@ const DiaryListScreen = () => {
         ),
       });
     }
-  }, [isSelectMode, selectedIds.size, navigation]);
+  }, [isSelectMode, selectedIds.size, navigation, colors.primary]);
 
   const handleImport = useCallback(() => {
     Alert.alert('导入日记', '选择要导入的文件格式', [
@@ -789,7 +849,7 @@ const DiaryListScreen = () => {
             {item.mood && <Text style={{ fontSize: 16, marginRight: 4 }}>{MOOD_OPTIONS.find((m) => m.emoji === item.mood)?.emoji}</Text>}
             <Text style={[styles.entryTitle, { fontSize: settings.fontSize + 2 }]} numberOfLines={1}>{item.title || '无标题'}</Text>
           </View>
-          <Text style={styles.entryDate}>{format(new Date(item.updatedAt), 'yyyy年MM月dd日 HH:mm')}</Text>
+          <Text style={styles.entryDate}>{format(new Date(item.createdAt), 'yyyy年MM月dd日')}</Text>
           {item.folderId && (
             <Text style={styles.entryFolder}>📁 {getFolderName(item.folderId)}</Text>
           )}
@@ -801,9 +861,6 @@ const DiaryListScreen = () => {
               ))}
             </View>
           )}
-          <Text style={styles.entryUpdatedAt}>
-            -- {format(new Date(item.updatedAt), 'MM/dd HH:mm')}
-          </Text>
         </View>
         {!isSelectMode && (
           <View style={styles.entryRightActions}>
@@ -1077,10 +1134,45 @@ const DiaryListScreen = () => {
         onRefresh={loadData}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={diaryEntries.length === 0 ? styles.emptyList : styles.listContent}
+        ListHeaderComponent={
+          onThisDayEntries.length > 0 ? (
+            <View style={styles.onThisDaySection}>
+              <View style={styles.onThisDayHeader}>
+                <MaterialIcons name="history" size={18} color={colors.primary} />
+                <Text style={[styles.onThisDayTitle, { color: colors.primary }]}>那年今日</Text>
+              </View>
+              {onThisDayEntries.slice(0, 3).map((entry) => (
+                <TouchableOpacity
+                  key={entry.id}
+                  style={[styles.onThisDayCard, { backgroundColor: colors.card, borderLeftColor: colors.primary }]}
+                  activeOpacity={0.7}
+                  onPress={() => navigation.navigate('DiaryDetail', { entryId: entry.id })}
+                >
+                  <Text style={[styles.onThisDayDate, { color: colors.placeholder }]}>
+                    {entry.createdAt.slice(0, 4)}年{parseInt(entry.createdAt.slice(5, 7), 10)}月{parseInt(entry.createdAt.slice(8, 10), 10)}日
+                  </Text>
+                  <Text style={[styles.onThisDayEntryTitle, { color: colors.text }]} numberOfLines={1}>
+                    {entry.title || '无标题'}
+                  </Text>
+                  {entry.content ? (
+                    <Text style={[styles.onThisDayContent, { color: colors.textSecondary }]} numberOfLines={2}>
+                      {entry.content.replace(/[#*_~`>\-\[\]()!]/g, '').slice(0, 60)}
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
+              ))}
+              {onThisDayEntries.length > 3 && (
+                <Text style={[styles.onThisDayMore, { color: colors.placeholder }]}>还有 {onThisDayEntries.length - 3} 篇...</Text>
+              )}
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
-          <Text style={styles.emptyText}>
-            {searchQuery.trim() ? '没有匹配的日记。' : activeFolderId !== undefined ? '这个日记夹里还没有日记。' : '还没有日记，点右下角开始记录。'}
-          </Text>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={styles.emptyText}>
+              {searchQuery.trim() ? '没有匹配的日记。' : activeFolderId !== undefined ? '这个日记夹里还没有日记。' : '还没有日记，点右下角开始记录。'}
+            </Text>
+          </View>
         }
       />
       {isCurrentFolderLocked && (

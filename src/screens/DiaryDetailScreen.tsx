@@ -1,6 +1,5 @@
 ﻿import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Alert, Image, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
+import { Alert, Image, Keyboard, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { format } from 'date-fns';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -10,7 +9,7 @@ import { useDatabase } from '../services/database';
 import { useSettings } from '../services/settings';
 import { useThemeColors, getFontFamily, ThemeColors } from '../services/theme';
 import * as ImagePicker from 'expo-image-picker';
-import { DiaryFolder, MOOD_OPTIONS } from '../types/diary';
+import { DiaryFolder, MOOD_OPTIONS, DIARY_BACKGROUNDS, getDiaryBackground } from '../types/diary';
 import { ALL_TEMPLATES } from '../types/template';
 import { exportSingleEntryToHtml, shareDiaryAsImage, saveDiaryImageToAlbum } from '../utils/export';
 import DiaryCard from '../components/DiaryCard';
@@ -297,7 +296,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
   const [tagsText, setTagsText] = useState('');
   const [folderId, setFolderId] = useState<string | null>(presetFolderId ?? null);
   const [folders, setFolders] = useState<DiaryFolder[]>([]);
-  const [originalSnapshot, setOriginalSnapshot] = useState({ title: '', content: '', tagsText: '', folderId: null as string | null, mood: null as string | null, imageUris: [] as string[] });
+  const [originalSnapshot, setOriginalSnapshot] = useState({ title: '', content: '', tagsText: '', folderId: null as string | null, mood: null as string | null, imageUris: [] as string[], background: null as string | null });
   const [loadedUpdatedAt, setLoadedUpdatedAt] = useState<string | null>(null);
   const [isPinned, setIsPinned] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -307,12 +306,38 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
   const [isEditing, setIsEditing] = useState(false);
   const [mood, setMood] = useState<string | null>(null);
   const [imageUris, setImageUris] = useState<string[]>([]);
+  const [background, setBackground] = useState<string | null>(null);
+  const [showMenu, setShowMenu] = useState(false);
+  const [showBackgroundPicker, setShowBackgroundPicker] = useState(false);
+  const [menuPos, setMenuPos] = useState({ y: 0 });
+  const menuBtnRef = useRef<View>(null);
   const cardRef = useRef<View>(null) as React.MutableRefObject<View>;
-  const formRef = useRef({ title: '', content: '', tagsText: '', folderId: null as string | null, mood: null as string | null, imageUris: [] as string[] });
-  const scrollRef = useRef<any>(null);
+  const formRef = useRef({ title: '', content: '', tagsText: '', folderId: null as string | null, mood: null as string | null, imageUris: [] as string[], background: null as string | null });
+  const scrollRef = useRef<ScrollView>(null);
+  const contentInputRef = useRef<TextInput>(null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const cursorOffsetRef = useRef(0); // character offset of cursor in content
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+      // Scroll to keep cursor line visible
+      setTimeout(() => {
+        if (!scrollRef.current) return;
+        const textBefore = content.substring(0, cursorOffsetRef.current);
+        const lineCount = textBefore.split('\n').length;
+        const lineHeight = 24;
+        const cursorY = lineCount * lineHeight; // approximate Y of cursor in content
+        // Scroll so cursor is about 120px from the bottom of visible area
+        scrollRef.current.scrollTo({ y: Math.max(0, cursorY - 200), animated: true });
+      }, 300);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, [content]);
 
 
-  formRef.current = { title, content, tagsText, folderId, mood, imageUris };
+  formRef.current = { title, content, tagsText, folderId, mood, imageUris, background };
 
 
 
@@ -324,7 +349,8 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
     tagsText !== originalSnapshot.tagsText ||
     folderId !== originalSnapshot.folderId ||
     mood !== originalSnapshot.mood ||
-    JSON.stringify(imageUris) !== JSON.stringify(originalSnapshot.imageUris);
+    JSON.stringify(imageUris) !== JSON.stringify(originalSnapshot.imageUris) ||
+    background !== originalSnapshot.background;
 
   useEffect(() => {
     let mounted = true;
@@ -364,6 +390,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
           folderId: entry.folderId,
           mood: entry.mood ?? null,
           imageUris: entry.imageUris ?? [],
+          background: entry.background ?? null,
         };
         setTitle(nextSnapshot.title);
         setContent(nextSnapshot.content);
@@ -371,6 +398,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         setFolderId(nextSnapshot.folderId);
         setMood(nextSnapshot.mood);
         setImageUris(nextSnapshot.imageUris);
+        setBackground(nextSnapshot.background);
         setOriginalSnapshot(nextSnapshot);
         setLoadedUpdatedAt(entry.updatedAt);
         setIsPinned(entry.isPinned ?? false);
@@ -458,6 +486,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         folderId: form.folderId,
         mood: form.mood,
         imageUris: form.imageUris,
+        background: form.background,
       };
 
       if (entryId) {
@@ -498,6 +527,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         folderId: form.folderId,
         mood: form.mood,
         imageUris: form.imageUris,
+        background: form.background,
       };
 
       if (entryId) {
@@ -507,7 +537,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         navigation.setParams({ entryId: newEntry.id } as any);
       }
 
-      setOriginalSnapshot({ title: trimmedTitle, content: trimmedContent, tagsText: form.tagsText, folderId: form.folderId, mood: form.mood, imageUris: form.imageUris });
+      setOriginalSnapshot({ title: trimmedTitle, content: trimmedContent, tagsText: form.tagsText, folderId: form.folderId, mood: form.mood, imageUris: form.imageUris, background: form.background });
       Alert.alert('已保存', '日记保存成功。');
     } catch (error) {
       console.error('Failed to save diary entry', error);
@@ -613,24 +643,22 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
       ),
       headerRight: () => (
         <View style={styles.headerActions}>
-          {entryId && (
-            <TouchableOpacity onPress={() => setShowTemplateModal(true)} style={styles.headerButton} accessibilityLabel="应用模板">
-              <MaterialIcons name="description" size={22} color={colors.primary} />
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity onPress={handleTogglePin} style={styles.headerButton} accessibilityLabel="置顶">
-            <MaterialIcons name="push-pin" size={22} color={isPinned ? colors.primary : colors.placeholder} />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={handleShare} style={styles.headerButton} accessibilityLabel="分享。">
-            <MaterialIcons name="share" size={22} color={colors.primary} />
-          </TouchableOpacity>
           <TouchableOpacity onPress={handleSave} style={styles.headerButton} disabled={isSaving} accessibilityLabel="保存日记">
             <MaterialIcons name="save" size={24} color={isSaving ? colors.placeholder : colors.primary} />
           </TouchableOpacity>
+          <View ref={menuBtnRef} style={styles.headerButton} onLayout={() => {
+            menuBtnRef.current?.measureInWindow((x, y, w, h) => {
+              setMenuPos({ y });
+            });
+          }}>
+            <TouchableOpacity onPress={() => setShowMenu(!showMenu)} accessibilityLabel="更多">
+              <MaterialIcons name="more-vert" size={24} color={colors.primary} />
+            </TouchableOpacity>
+          </View>
         </View>
       ),
     });
-  }, [handleBack, handleSave, handleShare, handleTogglePin, isPinned, isSaving, navigation]);
+  }, [handleBack, handleSave, isSaving, navigation, showMenu]);
 
   const currentFolder = folderId ? folders.find((f) => f.id === folderId) : null;
   const currentFolderName = currentFolder?.name || '未分类';
@@ -654,7 +682,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         <DiaryCard ref={cardRef} entry={currentEntry} avatarUri={settings.avatarUri} nickname={settings.nickname} />
       </View>
 
-      <KeyboardAwareScrollView ref={scrollRef} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" enableOnAndroid={true} extraScrollHeight={80}>
+      <ScrollView ref={scrollRef} contentContainerStyle={[styles.scrollContent, { paddingBottom: keyboardHeight + 32, backgroundColor: getDiaryBackground(background).id !== 'default' ? getDiaryBackground(background).background : undefined }]} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
         {/* Folder selector */}
         <TouchableOpacity style={styles.folderSelector} onPress={() => setShowFolderPicker(!showFolderPicker)}>
           <MaterialIcons
@@ -691,9 +719,9 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         )}
 
         <TextInput
-          style={styles.titleInput}
+          style={[styles.titleInput, background && background !== 'default' ? { color: getDiaryBackground(background).textColor, borderBottomColor: getDiaryBackground(background).textColor + '30' } : undefined]}
           placeholder="标题（可选）"
-          placeholderTextColor={colors.placeholder}
+          placeholderTextColor={background && background !== 'default' ? getDiaryBackground(background).placeholderColor : colors.placeholder}
           value={title}
           onChangeText={setTitle}
           editable={!isSaving}
@@ -716,6 +744,7 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
           ))}
         </ScrollView>
 
+        {/* Tags input */}
         <TextInput
           style={[styles.tagsInput, { color: colors.text, backgroundColor: colors.input, borderRadius: 8, paddingHorizontal: 12, marginVertical: 8 }]}
           placeholder="标签（如：#生活#日常#感悟）"
@@ -727,17 +756,21 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
         />
 
         <TextInput
-          style={styles.contentInput}
+          ref={contentInputRef}
+          style={[styles.contentInput, background && background !== 'default' ? { color: getDiaryBackground(background).textColor } : undefined]}
           placeholder="记录你的思绪..."
-          placeholderTextColor={colors.placeholder}
+          placeholderTextColor={background && background !== 'default' ? getDiaryBackground(background).placeholderColor : colors.placeholder}
           value={content}
           onChangeText={setContent}
           editable={!isSaving}
           multiline
           textAlignVertical="top"
           blurOnSubmit={false}
-          onFocus={() => { setIsEditing(true);  }}
-          onBlur={() => { setIsEditing(false);  }}
+          onFocus={() => { setIsEditing(true); }}
+          onBlur={() => { setIsEditing(false); }}
+          onSelectionChange={(e) => {
+            cursorOffsetRef.current = e.nativeEvent.selection.start;
+          }}
         />
 
         {/* Image grid */}
@@ -768,13 +801,19 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
           </Text>
         )}
 
-      </KeyboardAwareScrollView>
+      </ScrollView>
 
       {/* Template Selection Modal */}
       <Modal visible={showTemplateModal} transparent animationType="fade">
         <View style={styles.modalOverlay}>
+          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setShowTemplateModal(false)} />
           <View style={[styles.modalContent, { maxHeight: '70%' }]}>
-            <Text style={styles.modalTitle}>选择模板</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <Text style={[styles.modalTitle, { marginBottom: 0, textAlign: 'left' }]}>选择模板</Text>
+              <TouchableOpacity onPress={() => setShowTemplateModal(false)} style={{ padding: 4 }}>
+                <MaterialIcons name="close" size={22} color={colors.placeholder} />
+              </TouchableOpacity>
+            </View>
             <ScrollView style={{ maxHeight: 400 }}>
               {ALL_TEMPLATES.map((t) => (
                 <TouchableOpacity
@@ -805,8 +844,14 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
       {/* Export Modal */}
       <Modal visible={showExportModal} transparent animationType="fade">
         <View style={styles.modalOverlay}>
+          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setShowExportModal(false)} />
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>导出日记</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <Text style={[styles.modalTitle, { marginBottom: 0, textAlign: 'left' }]}>导出日记</Text>
+              <TouchableOpacity onPress={() => setShowExportModal(false)} style={{ padding: 4 }}>
+                <MaterialIcons name="close" size={22} color={colors.placeholder} />
+              </TouchableOpacity>
+            </View>
 
             <TouchableOpacity style={styles.exportOption} onPress={handleExportImage}>
               <MaterialIcons name="image" size={28} color="#FF9500" />
@@ -838,6 +883,121 @@ const DiaryDetailScreen = ({ route, navigation }: DiaryDetailScreenProps) => {
             >
               <Text style={styles.modalButtonText}>取消</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+      {/* Floating Menu */}
+      {showMenu && (
+        <>
+          <TouchableOpacity
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99 }}
+            activeOpacity={1}
+            onPress={() => setShowMenu(false)}
+          />
+          <View style={{
+            position: 'absolute',
+            top: menuPos.y + 44,
+            right: 8,
+            backgroundColor: colors.card,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: colors.border,
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.15,
+            shadowRadius: 12,
+            elevation: 8,
+            zIndex: 100,
+            minWidth: 180,
+            overflow: 'hidden',
+          }}>
+            {entryId && (
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 13, paddingHorizontal: 16, gap: 12 }}
+                onPress={() => { setShowMenu(false); setShowTemplateModal(true); }}
+              >
+                <MaterialIcons name="description" size={20} color={colors.primary} />
+                <Text style={{ fontSize: 15, color: colors.text, flex: 1 }}>模板</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 13, paddingHorizontal: 16, gap: 12 }}
+              onPress={() => { setShowMenu(false); handleShare(); }}
+            >
+              <MaterialIcons name="share" size={20} color={colors.primary} />
+              <Text style={{ fontSize: 15, color: colors.text, flex: 1 }}>分享</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 13, paddingHorizontal: 16, gap: 12 }}
+              onPress={() => { setShowMenu(false); setShowBackgroundPicker(true); }}
+            >
+              <MaterialIcons name="palette" size={20} color={colors.primary} />
+              <Text style={{ fontSize: 15, color: colors.text, flex: 1 }}>更换信纸</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 13, paddingHorizontal: 16, gap: 12 }}
+              onPress={() => { setShowMenu(false); handleTogglePin(); }}
+            >
+              <MaterialIcons name="push-pin" size={20} color={isPinned ? colors.primary : colors.textSecondary} />
+              <Text style={{ fontSize: 15, color: colors.text, flex: 1 }}>{isPinned ? '取消置顶' : '置顶'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 13, paddingHorizontal: 16, gap: 12 }}
+              onPress={() => { setShowMenu(false); handleSaveToAlbum(); }}
+            >
+              <MaterialIcons name="save-alt" size={20} color={colors.primary} />
+              <Text style={{ fontSize: 15, color: colors.text, flex: 1 }}>保存到相册</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 13, paddingHorizontal: 16, gap: 12 }}
+              onPress={() => { setShowMenu(false); handleExportHtml(); }}
+            >
+              <MaterialIcons name="web" size={20} color={colors.primary} />
+              <Text style={{ fontSize: 15, color: colors.text, flex: 1 }}>导出网页</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
+
+      {/* Background Picker Modal */}
+      <Modal visible={showBackgroundPicker} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setShowBackgroundPicker(false)} />
+          <View style={[styles.modalContent, { maxWidth: 360, alignSelf: 'center' }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <Text style={[styles.modalTitle, { marginBottom: 0, textAlign: 'left' }]}>选择信纸</Text>
+              <TouchableOpacity onPress={() => setShowBackgroundPicker(false)} style={{ padding: 4 }}>
+                <MaterialIcons name="close" size={22} color={colors.placeholder} />
+              </TouchableOpacity>
+            </View>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 14, justifyContent: 'center' }}>
+              {DIARY_BACKGROUNDS.map((bg) => {
+                const isActive = background === bg.id || (!background && bg.id === 'default');
+                const previewColor = bg.id === 'default' ? colors.card : bg.background;
+                return (
+                  <TouchableOpacity
+                    key={bg.id}
+                    onPress={() => { setBackground(bg.id === 'default' ? null : bg.id); setShowBackgroundPicker(false); }}
+                    style={{ alignItems: 'center', width: 68, gap: 6 }}
+                    activeOpacity={0.7}
+                  >
+                    <View style={{
+                      width: 48,
+                      height: 48,
+                      borderRadius: 12,
+                      backgroundColor: previewColor,
+                      borderWidth: 2,
+                      borderColor: isActive ? colors.primary : colors.border,
+                    }} />
+                    <Text style={{
+                      fontSize: 12,
+                      color: isActive ? colors.primary : colors.textSecondary,
+                      fontWeight: isActive ? '600' : '400',
+                    }}>{bg.name}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
         </View>
       </Modal>

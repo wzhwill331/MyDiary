@@ -14,6 +14,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Linking from 'expo-linking';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSettings, ThemeMode } from '../services/settings';
 import { useThemeColors } from '../services/theme';
@@ -21,6 +22,7 @@ import { useDatabase } from '../services/database';
 import { hasPassword, setPassword, verifyPassword, removePassword, isBiometricAvailable, authenticateWithBiometric } from '../services/password';
 import { DiaryEntry, DiaryFolder } from '../types/diary';
 import { TEMPLATE_CATEGORIES, DiaryTemplate } from '../types/template';
+const sponsorQr = require('../../assets/sponsor-qr.webp');
 import {
   exportDiaryEntriesToJson,
   exportDiaryEntriesToHtml,
@@ -97,14 +99,31 @@ const MeScreen = () => {
   const handleFontFamilyChange = (family: string) => updateSettings({ fontFamily: family });
 
   const handlePickAvatar = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
-    if (!result.canceled && result.assets[0]) {
-      updateSettings({ avatarUri: result.assets[0].uri });
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('权限不足', '需要相册权限才能选择头像');
+      return;
+    }
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        const srcUri = result.assets[0].uri;
+        const ext = srcUri.split('.').pop() || 'jpg';
+        const dir = FileSystem.documentDirectory + 'avatar/';
+        await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+        const dest = dir + 'avatar.' + ext;
+        await FileSystem.copyAsync({ from: srcUri, to: dest });
+        console.log('Avatar saved to:', dest);
+        updateSettings({ avatarUri: dest });
+      }
+    } catch (e) {
+      console.error('Failed to pick avatar:', e);
+      Alert.alert('错误', '选择头像失败');
     }
   };
 
@@ -302,12 +321,10 @@ const MeScreen = () => {
     Alert.alert('关于 MyDiary', '版本：1.2.1\n\n一款简洁优雅的日记应用\n支持 Markdown、图片、标签、分类管理', [{ text: '确定' }]);
   };
 
+  const [showSponsorModal, setShowSponsorModal] = useState(false);
+
   const handleSponsor = () => {
-    Alert.alert('赞助作者 ❤️', '感谢你的支持！', [
-      { text: '微信赞赏', onPress: () => Alert.alert('提示', '请扫描赞赏码') },
-      { text: 'GitHub Sponsors', onPress: () => Linking.openURL('https://github.com/sponsors') },
-      { text: '取消', style: 'cancel' },
-    ]);
+    setShowSponsorModal(true);
   };
 
   const styles = makeStyles(colors);
@@ -481,31 +498,12 @@ const MeScreen = () => {
 
       {/* Data & Export */}
       {renderSection('数据与印记', <>
-        {renderSettingRow('导出日记', handleExportAll)}
-        {renderSettingRow('选择性导出', handleExportSelect)}
-        {renderSettingRow('导入日记', handleImport)}
-        {renderSettingRow('回收站', () => navigation.navigate('DiaryTab', { screen: 'Trash' }))}
+        {renderSettingRow('数据管理', () => navigation.navigate('MeDataExport' as any))}
       </>)}
 
-      {/* Visual */}
-      {renderSection('视觉与感知', <>
-        <View style={styles.settingRowNoArrow}><Text style={styles.settingTitle}>排版与留白</Text></View>
-        <View style={styles.chipSection}>
-          <Text style={styles.chipLabel}>字号</Text>
-          {renderChips(FONT_SIZES, settings.fontSize, handleFontSizeChange)}
-        </View>
-        <View style={styles.chipSection}>
-          <Text style={styles.chipLabel}>字体</Text>
-          {renderChips(FONT_FAMILIES, settings.fontFamily, handleFontFamilyChange)}
-        </View>
-        <View style={styles.chipSection}>
-          <Text style={styles.chipLabel}>主题</Text>
-          {renderChips([
-            { label: '浅色', value: 'light' as ThemeMode },
-            { label: '深色', value: 'dark' as ThemeMode },
-            { label: '自动', value: 'system' as ThemeMode },
-          ], settings.theme, handleThemeChange)}
-        </View>
+      {/* Settings */}
+      {renderSection('设置', <>
+        {renderSettingRow('视觉与安全', () => navigation.navigate('MeSettings' as any))}
       </>)}
 
       {/* About */}
@@ -540,10 +538,6 @@ const MeScreen = () => {
             ))}
           </View>
         ))}
-      </>)}
-
-      {renderSection('安全', <>
-        {renderSettingRow(hasPw ? '修改密码' : '设置密码', handlePasswordMenu)}
       </>)}
 
       {renderSection('关于', <>
@@ -688,6 +682,20 @@ const MeScreen = () => {
                 </TouchableOpacity>
               </>
             )}
+          </View>
+        </View>
+      </Modal>
+      {/* Sponsor Modal */}
+      <Modal visible={showSponsorModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>赞助作者 ❤️</Text>
+            <Text style={{ textAlign: 'center', color: colors.textSecondary, marginBottom: 16, fontSize: 14 }}>感谢你的支持！</Text>
+            <Image source={sponsorQr} style={{ width: 200, height: 200, alignSelf: 'center', borderRadius: 8 }} resizeMode="contain" />
+            <Text style={{ textAlign: 'center', color: colors.placeholder, marginTop: 12, fontSize: 13 }}>微信扫码赞赏</Text>
+            <TouchableOpacity style={[styles.modalBtnCancel, { marginTop: 16 }]} onPress={() => setShowSponsorModal(false)}>
+              <Text style={styles.modalBtnCancelText}>关闭</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>

@@ -1,6 +1,7 @@
 import { createContext, createElement, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
 import { Text, View } from 'react-native';
 import * as SQLite from 'expo-sqlite';
+import { v4 as uuidv4 } from 'uuid';
 import { DiaryBackup, DiaryEntry, DiaryFolder } from '../types/diary';
 
 const DATABASE_NAME = 'mydiary.db';
@@ -12,6 +13,7 @@ export type DiaryEntryInput = {
   folderId: string | null;
   mood?: string | null;
   imageUris?: string[];
+  background?: string | null;
 };
 
 export type DiaryFolderInput = {
@@ -31,6 +33,7 @@ type DiaryEntryRow = {
   isPinned: number | null;
   mood: string | null;
   imageUris: string | null;
+  background: string | null;
 };
 
 type DiaryFolderRow = {
@@ -78,6 +81,7 @@ const rowToDiaryEntry = (row: DiaryEntryRow): DiaryEntry => ({
   isPinned: row.isPinned === 1,
   mood: row.mood ?? null,
   imageUris: row.imageUris ? JSON.parse(row.imageUris) : [],
+  background: row.background ?? null,
 });
 
 const rowToDiaryFolder = (row: DiaryFolderRow): DiaryFolder => ({
@@ -209,6 +213,13 @@ export const initDatabase = async () => {
   } catch {
     // Column already exists, ignore
   }
+
+  // Migration: add background column
+  try {
+    await database.execAsync(`ALTER TABLE diary_entries ADD COLUMN background TEXT;`);
+  } catch {
+    // Column already exists, ignore
+  }
 };
 
 // ==================== Folder CRUD ====================
@@ -291,7 +302,7 @@ export const listEntries = async (folderId?: string | null): Promise<DiaryEntry[
   await initDatabase();
   const database = await openDatabase();
 
-  let query = 'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris FROM diary_entries WHERE deletedAt IS NULL';
+  let query = 'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris, background FROM diary_entries WHERE deletedAt IS NULL';
   const params: string[] = [];
 
   if (folderId === null) {
@@ -337,7 +348,7 @@ export const getEntryById = async (id: string): Promise<DiaryEntry | undefined> 
   await initDatabase();
   const database = await openDatabase();
   const row = await database.getFirstAsync<DiaryEntryRow>(
-    'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris FROM diary_entries WHERE id = ?',
+    'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris, background FROM diary_entries WHERE id = ?',
     [id]
   );
   return row ? rowToDiaryEntry(row) : undefined;
@@ -356,12 +367,13 @@ export const createEntry = async (id: string, input: DiaryEntryInput): Promise<D
     tags: input.tags,
     mood: input.mood ?? null,
     imageUris: input.imageUris ?? [],
+    background: input.background ?? null,
   };
 
   const database = await openDatabase();
   await database.runAsync(
-    'INSERT INTO diary_entries (id, title, content, folderId, createdAt, updatedAt, tags, imageUris, mood) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [entry.id, entry.title, entry.content, entry.folderId, entry.createdAt, entry.updatedAt, serializeTags(entry.tags), JSON.stringify(entry.imageUris ?? []), entry.mood ?? null]
+    'INSERT INTO diary_entries (id, title, content, folderId, createdAt, updatedAt, tags, imageUris, mood, background) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [entry.id, entry.title, entry.content, entry.folderId, entry.createdAt, entry.updatedAt, serializeTags(entry.tags), JSON.stringify(entry.imageUris ?? []), entry.mood ?? null, entry.background ?? null]
   );
 
   return entry;
@@ -382,13 +394,14 @@ export const updateEntry = async (id: string, input: DiaryEntryInput): Promise<D
     tags: input.tags,
     mood: input.mood ?? existing.mood ?? null,
     imageUris: input.imageUris ?? existing.imageUris ?? [],
+    background: input.background ?? existing.background ?? null,
     updatedAt: new Date().toISOString(),
   };
 
   const database = await openDatabase();
   await database.runAsync(
-    'UPDATE diary_entries SET title = ?, content = ?, folderId = ?, updatedAt = ?, tags = ?, mood = ?, imageUris = ? WHERE id = ?',
-    [entry.title, entry.content, entry.folderId, entry.updatedAt, serializeTags(entry.tags), entry.mood ?? null, JSON.stringify(entry.imageUris ?? []), entry.id]
+    'UPDATE diary_entries SET title = ?, content = ?, folderId = ?, updatedAt = ?, tags = ?, mood = ?, imageUris = ?, background = ? WHERE id = ?',
+    [entry.title, entry.content, entry.folderId, entry.updatedAt, serializeTags(entry.tags), entry.mood ?? null, JSON.stringify(entry.imageUris ?? []), entry.background ?? null, entry.id]
   );
 
   return entry;
@@ -461,7 +474,7 @@ export const listEntriesByDate = async (dateStr: string): Promise<DiaryEntry[]> 
   await initDatabase();
   const database = await openDatabase();
   const rows = await database.getAllAsync<DiaryEntryRow>(
-    `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris FROM diary_entries
+    `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris, background FROM diary_entries
      WHERE deletedAt IS NULL AND (createdAt LIKE ? OR updatedAt LIKE ?)
      ORDER BY updatedAt DESC`,
     [`${dateStr}%`, `${dateStr}%`]
@@ -469,6 +482,18 @@ export const listEntriesByDate = async (dateStr: string): Promise<DiaryEntry[]> 
   return rows.map(rowToDiaryEntry);
 };
 
+export const listEntriesByMonthDay = async (monthDay: string): Promise<DiaryEntry[]> => {
+  await initDatabase();
+  const allEntries = await listEntries();
+  // monthDay format: 'MM-DD'
+  return allEntries.filter((e) => {
+    const d = e.createdAt;
+    // Match pattern like '-05-19' anywhere in the ISO date string
+    return d.includes('-' + monthDay);
+  });
+};
+
+// Debug: create a test entry for "on this day" feature
 export const togglePinEntry = async (id: string): Promise<void> => {
   await initDatabase();
   const database = await openDatabase();
@@ -594,6 +619,7 @@ export type DatabaseApi = {
   togglePinEntry: typeof togglePinEntry;
   listTrashedEntries: typeof listTrashedEntries;
   listEntriesByDate: typeof listEntriesByDate;
+  listEntriesByMonthDay: typeof listEntriesByMonthDay;
   getDiaryStats: typeof getDiaryStats;
   emptyTrash: typeof emptyTrash;
   moveEntriesToFolder: typeof moveEntriesToFolder;
@@ -619,6 +645,7 @@ const databaseApi: DatabaseApi = {
   togglePinEntry,
   listTrashedEntries,
   listEntriesByDate,
+  listEntriesByMonthDay,
   getDiaryStats,
   emptyTrash,
   moveEntriesToFolder,

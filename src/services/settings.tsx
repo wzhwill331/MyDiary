@@ -9,6 +9,7 @@ export interface AppSettings {
   fontFamily: string;
   nickname: string;
   avatarUri: string | null;
+  accentColor: string;
 }
 
 const SETTINGS_KEY = 'app_settings';
@@ -19,6 +20,7 @@ const defaultSettings: AppSettings = {
   fontFamily: 'system',
   nickname: '小主人',
   avatarUri: null,
+  accentColor: '#007AFF',
 };
 
 interface SettingsContextType {
