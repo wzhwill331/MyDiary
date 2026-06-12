@@ -11,6 +11,9 @@ export type DiaryEntryInput = {
   content: string;
   tags: string[];
   folderId: string | null;
+  mood?: string | null;
+  imageUris?: string[];
+  background?: string | null;
 };
 
 export type DiaryFolderInput = {
@@ -46,6 +49,14 @@ const normalizeImportedEntry = (value: unknown): DiaryEntry | null => {
     createdAt,
     updatedAt,
     tags: rawTags.filter((tag): tag is string => typeof tag === 'string'),
+    isPinned: source.isPinned === true,
+    locked: source.locked === true,
+    deletedAt: typeof source.deletedAt === 'string' ? source.deletedAt : null,
+    mood: typeof source.mood === 'string' ? source.mood : null,
+    imageUris: Array.isArray(source.imageUris)
+      ? source.imageUris.filter((uri): uri is string => typeof uri === 'string')
+      : [],
+    background: typeof source.background === 'string' ? source.background : null,
   };
 };
 
@@ -178,13 +189,19 @@ export const deleteFolder = async (id: string): Promise<void> => {
 
 export const listEntries = async (folderId?: string | null): Promise<DiaryEntry[]> => {
   const entries = await getStoredEntries();
-  let filtered = entries;
+  // Filter out soft-deleted entries
+  let filtered = entries.filter((e) => !e.deletedAt);
   if (folderId === null) {
-    filtered = entries.filter((e) => !e.folderId);
+    filtered = filtered.filter((e) => !e.folderId);
   } else if (folderId !== undefined) {
-    filtered = entries.filter((e) => e.folderId === folderId);
+    filtered = filtered.filter((e) => e.folderId === folderId);
   }
-  return filtered.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  return filtered.sort((a, b) => {
+    // Pinned entries first
+    if (a.isPinned && !b.isPinned) return -1;
+    if (!a.isPinned && b.isPinned) return 1;
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
 };
 
 export const searchEntries = async (query: string, folderId?: string | null): Promise<DiaryEntry[]> => {
@@ -216,6 +233,9 @@ export const createEntry = async (id: string, input: DiaryEntryInput): Promise<D
     createdAt: now,
     updatedAt: now,
     tags: input.tags,
+    mood: input.mood ?? null,
+    imageUris: input.imageUris ?? [],
+    background: input.background ?? null,
   };
   entries.push(entry);
   await setStoredEntries(entries);
@@ -233,22 +253,13 @@ export const updateEntry = async (id: string, input: DiaryEntryInput): Promise<D
     content: input.content.trim(),
     folderId: input.folderId,
     tags: input.tags,
+    mood: input.mood ?? entries[index].mood ?? null,
+    imageUris: input.imageUris ?? entries[index].imageUris ?? [],
+    background: input.background ?? entries[index].background ?? null,
     updatedAt: new Date().toISOString(),
   };
   await setStoredEntries(entries);
   return entries[index];
-};
-
-export const deleteEntry = async (id: string): Promise<void> => {
-  const entries = await getStoredEntries();
-  await setStoredEntries(entries.filter((e) => e.id !== id));
-};
-
-export const deleteEntries = async (ids: string[]): Promise<void> => {
-  if (ids.length === 0) return;
-  const idSet = new Set(ids);
-  const entries = await getStoredEntries();
-  await setStoredEntries(entries.filter((e) => !idSet.has(e.id)));
 };
 
 export const moveEntriesToFolder = async (ids: string[], folderId: string | null): Promise<void> => {
@@ -268,7 +279,7 @@ export const moveEntriesToFolder = async (ids: string[], folderId: string | null
 export const exportEntries = async (): Promise<DiaryBackup> => ({
   version: 2,
   exportedAt: new Date().toISOString(),
-  entries: await listEntries(),
+  entries: [...await listEntries(), ...await listTrashedEntries()],
   folders: await listFolders(),
 });
 
@@ -314,6 +325,142 @@ export const importEntries = async (entries: DiaryEntry[], folders: DiaryFolder[
   return { added, updated, skipped, foldersAdded };
 };
 
+// ==================== Soft Delete & Trash ====================
+
+export const restoreEntry = async (id: string): Promise<void> => {
+  const entries = await getStoredEntries();
+  const entry = entries.find((e) => e.id === id);
+  if (entry) {
+    entry.deletedAt = null;
+    entry.updatedAt = new Date().toISOString();
+    await setStoredEntries(entries);
+  }
+};
+
+export const permanentDeleteEntry = async (id: string): Promise<void> => {
+  const entries = await getStoredEntries();
+  await setStoredEntries(entries.filter((e) => e.id !== id));
+};
+
+export const togglePinEntry = async (id: string): Promise<void> => {
+  const entries = await getStoredEntries();
+  const entry = entries.find((e) => e.id === id);
+  if (entry) {
+    entry.isPinned = !entry.isPinned;
+    entry.updatedAt = new Date().toISOString();
+    await setStoredEntries(entries);
+  }
+};
+
+export const toggleEntryLock = async (id: string): Promise<void> => {
+  const entries = await getStoredEntries();
+  const entry = entries.find((e) => e.id === id);
+  if (entry) {
+    entry.locked = !entry.locked;
+    entry.updatedAt = new Date().toISOString();
+    await setStoredEntries(entries);
+  }
+};
+
+export const clearAllEntryLocks = async (): Promise<void> => {
+  const entries = await getStoredEntries();
+  let changed = false;
+  for (const entry of entries) {
+    if (entry.locked) {
+      entry.locked = false;
+      changed = true;
+    }
+  }
+  if (changed) await setStoredEntries(entries);
+};
+
+export const listTrashedEntries = async (): Promise<DiaryEntry[]> => {
+  const entries = await getStoredEntries();
+  return entries
+    .filter((e) => !!e.deletedAt)
+    .sort((a, b) => new Date(b.deletedAt!).getTime() - new Date(a.deletedAt!).getTime());
+};
+
+export const emptyTrash = async (): Promise<void> => {
+  const entries = await getStoredEntries();
+  await setStoredEntries(entries.filter((e) => !e.deletedAt));
+};
+
+export const listEntriesByDate = async (dateStr: string): Promise<DiaryEntry[]> => {
+  const entries = await listEntries();
+  return entries.filter((e) => {
+    const created = e.createdAt.slice(0, 10);
+    const updated = e.updatedAt.slice(0, 10);
+    return created === dateStr || updated === dateStr;
+  });
+};
+
+export const listEntriesByMonthDay = async (monthDay: string): Promise<DiaryEntry[]> => {
+  const entries = await listEntries();
+  return entries.filter((e) => e.createdAt.includes('-' + monthDay));
+};
+
+export const getAllTags = async (): Promise<string[]> => {
+  const entries = await listEntries();
+  const tagSet = new Set<string>();
+  for (const entry of entries) {
+    for (const tag of entry.tags) {
+      tagSet.add(tag);
+    }
+  }
+  return Array.from(tagSet).sort();
+};
+
+export const getDiaryStats = async (): Promise<{ totalEntries: number; monthEntries: number; totalChars: number; streak: number; moodDistribution: Record<string, number> }> => {
+  const entries = await listEntries();
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const monthEntries = entries.filter((e) => e.createdAt >= monthStart);
+  const totalChars = entries.reduce((sum, e) => sum + (e.title?.length || 0) + (e.content?.length || 0), 0);
+
+  // Calculate streak
+  const dateSet = new Set(entries.map((e) => e.createdAt.slice(0, 10)));
+  let streak = 0;
+  const d = new Date();
+  while (true) {
+    const key = d.toISOString().slice(0, 10);
+    if (dateSet.has(key)) { streak++; d.setDate(d.getDate() - 1); } else break;
+  }
+
+  // Mood distribution
+  const moodDistribution: Record<string, number> = {};
+  for (const e of entries) {
+    if (e.mood) moodDistribution[e.mood] = (moodDistribution[e.mood] || 0) + 1;
+  }
+
+  return { totalEntries: entries.length, monthEntries: monthEntries.length, totalChars, streak, moodDistribution };
+};
+
+// Override deleteEntry/deleteEntries to use soft delete
+export const deleteEntry = async (id: string): Promise<void> => {
+  const entries = await getStoredEntries();
+  const entry = entries.find((e) => e.id === id);
+  if (entry) {
+    entry.deletedAt = new Date().toISOString();
+    entry.updatedAt = new Date().toISOString();
+    await setStoredEntries(entries);
+  }
+};
+
+export const deleteEntries = async (ids: string[]): Promise<void> => {
+  if (ids.length === 0) return;
+  const idSet = new Set(ids);
+  const entries = await getStoredEntries();
+  const now = new Date().toISOString();
+  for (const entry of entries) {
+    if (idSet.has(entry.id)) {
+      entry.deletedAt = now;
+      entry.updatedAt = now;
+    }
+  }
+  await setStoredEntries(entries);
+};
+
 export type DatabaseApi = {
   listFolders: typeof listFolders;
   getFolderById: typeof getFolderById;
@@ -327,6 +474,17 @@ export type DatabaseApi = {
   updateEntry: typeof updateEntry;
   deleteEntry: typeof deleteEntry;
   deleteEntries: typeof deleteEntries;
+  restoreEntry: typeof restoreEntry;
+  permanentDeleteEntry: typeof permanentDeleteEntry;
+  togglePinEntry: typeof togglePinEntry;
+  toggleEntryLock: typeof toggleEntryLock;
+  clearAllEntryLocks: typeof clearAllEntryLocks;
+  listTrashedEntries: typeof listTrashedEntries;
+  listEntriesByDate: typeof listEntriesByDate;
+  listEntriesByMonthDay: typeof listEntriesByMonthDay;
+  getAllTags: typeof getAllTags;
+  getDiaryStats: typeof getDiaryStats;
+  emptyTrash: typeof emptyTrash;
   moveEntriesToFolder: typeof moveEntriesToFolder;
   exportEntries: typeof exportEntries;
   importEntries: typeof importEntries;
@@ -345,6 +503,17 @@ const databaseApi: DatabaseApi = {
   updateEntry,
   deleteEntry,
   deleteEntries,
+  restoreEntry,
+  permanentDeleteEntry,
+  togglePinEntry,
+  toggleEntryLock,
+  clearAllEntryLocks,
+  listTrashedEntries,
+  listEntriesByDate,
+  listEntriesByMonthDay,
+  getAllTags,
+  getDiaryStats,
+  emptyTrash,
   moveEntriesToFolder,
   exportEntries,
   importEntries,

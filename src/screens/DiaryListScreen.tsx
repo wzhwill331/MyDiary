@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   FlatList,
+  Image,
   Modal,
   ScrollView,
   StyleSheet,
@@ -10,18 +11,22 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { format } from 'date-fns';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { v4 as uuidv4 } from 'uuid';
 import { RootStackParamList } from '../../App';
 import { useDatabase } from '../services/database';
 import { hasPassword, verifyPassword, getLockedFolderIds, setFolderLocked as saveFolderLocked, isFolderLocked, isBiometricAvailable, authenticateWithBiometric } from '../services/password';
 import { useSettings } from '../services/settings';
-import { useThemeColors, getFontFamily, ThemeColors } from '../services/theme';
+import { useThemeColors, getFontFamily, ThemeColors, useIsDarkTheme } from '../services/theme';
 import { DiaryEntry, DiaryFolder, MOOD_OPTIONS } from '../types/diary';
 import { exportDiaryEntriesToJson, exportDiaryEntriesToHtml, exportDiaryEntriesToMarkdown, importDiaryEntriesFromJson } from '../utils/export';
+import { EmptyState, LoadingState } from '../components/ui';
+import { StarryBackground } from '../components/StarryBackground';
 
 type DiaryListScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'DiaryList'>;
 
@@ -36,6 +41,52 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   fixedHeader: {
     zIndex: 20,
     backgroundColor: colors.background,
+    paddingBottom: 6,
+  },
+  pageHero: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 6,
+  },
+  pageTitle: {
+    flex: 1,
+    fontSize: Math.min(settings.fontSize + 12, 30),
+    lineHeight: Math.min(settings.fontSize + 18, 36),
+    fontWeight: '800',
+    letterSpacing: 1,
+    color: colors.text,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  heroActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  heroButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  searchShell: {
+    minHeight: 46,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 20,
+    marginTop: 10,
+    marginBottom: 8,
+    paddingHorizontal: 15,
+    borderRadius: 14,
+    backgroundColor: colors.surfaceElevated,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.cardBorder,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.025,
+    shadowRadius: 7,
+    elevation: 1,
   },
   headerActions: {
     flexDirection: 'row',
@@ -46,16 +97,11 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     paddingVertical: 4,
   },
   searchInput: {
+    flex: 1,
     minHeight: 44,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    marginHorizontal: 12,
-    marginTop: 12,
-    marginBottom: 8,
-    backgroundColor: colors.card,
+    paddingHorizontal: 10,
     fontSize: settings.fontSize,
+    color: colors.text,
     fontFamily: getFontFamily(settings.fontFamily),
   },
   folderTabs: {
@@ -63,7 +109,7 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     paddingVertical: 4,
   },
   folderTabsContent: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 20,
     paddingEnd: 24,
     alignItems: 'center',
     gap: 8,
@@ -71,12 +117,12 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   folderTab: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 20,
-    backgroundColor: colors.card,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: colors.surfaceMuted,
     gap: 6,
-    minHeight: 48,
+    minHeight: 36,
   },
   folderTabActive: {
     backgroundColor: colors.selectedBg,
@@ -94,6 +140,7 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     paddingHorizontal: 10,
   },
   listContent: {
+    paddingTop: 6,
     paddingBottom: 110,
   },
   emptyList: {
@@ -102,25 +149,78 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     paddingHorizontal: 24,
     paddingBottom: 100,
   },
+  emptyPrompt: {
+    marginTop: 20,
+    padding: 18,
+    borderRadius: 20,
+    backgroundColor: colors.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.cardBorder,
+  },
+  emptyPromptEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    color: colors.brandSecondary,
+    marginBottom: 8,
+  },
+  emptyPromptTitle: {
+    fontSize: settings.fontSize + 3,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 6,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  emptyPromptText: {
+    fontSize: settings.fontSize - 2,
+    lineHeight: 21,
+    color: colors.textSecondary,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
   entryItem: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.card,
-    padding: 15,
-    marginHorizontal: 12,
+    padding: 13,
+    marginHorizontal: 20,
     marginVertical: 5,
-    borderRadius: 8,
-    elevation: 2,
-    shadowColor: colors.text,
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.15,
-    shadowRadius: 2,
+    borderRadius: 15,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.cardBorder,
+    elevation: 1,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.035,
+    shadowRadius: 9,
   },
   entryItemSelected: {
     backgroundColor: colors.selectedBg,
   },
   checkbox: {
     marginRight: 10,
+  },
+  dateRail: {
+    width: 50,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    paddingRight: 10,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: colors.hairline,
+  },
+  dateDay: {
+    fontSize: settings.fontSize + 12,
+    lineHeight: settings.fontSize + 16,
+    fontWeight: '500',
+    color: colors.text,
+    fontFamily: getFontFamily(settings.fontFamily),
+  },
+  dateWeek: {
+    marginTop: 2,
+    fontSize: 11,
+    color: colors.textTertiary,
+    fontFamily: getFontFamily(settings.fontFamily),
   },
   entryContent: {
     flex: 1,
@@ -135,7 +235,7 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   entryDate: {
     fontSize: 12,
     color: colors.placeholder,
-    marginTop: 2,
+    marginTop: 4,
     fontFamily: getFontFamily(settings.fontFamily),
   },
   entryFolder: {
@@ -147,20 +247,56 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   entrySnippet: {
     fontSize: settings.fontSize - 2,
     color: colors.textSecondary,
-    marginTop: 6,
-    lineHeight: 20,
+    marginTop: 7,
+    lineHeight: 21,
     fontFamily: getFontFamily(settings.fontFamily),
   },
   entryTags: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+  },
+  entryMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginTop: 8,
+  },
+  entryWordCount: {
+    fontSize: 11,
+    color: colors.placeholder,
+    marginLeft: 'auto',
+  },
+  entryImageRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 8,
+  },
+  entryImageThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 10,
+    backgroundColor: colors.tagBg,
+  },
+  entryCover: {
+    width: 64,
+    height: 70,
+    borderRadius: 11,
+    marginLeft: 8,
+    backgroundColor: colors.surfaceMuted,
+  },
+  entryImageMore: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  entryImageMoreText: {
+    fontSize: 12,
+    color: colors.placeholder,
   },
   tag: {
     backgroundColor: colors.tagBg,
-    borderRadius: 5,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
     marginRight: 5,
   },
   entryTitleRow: {
@@ -213,15 +349,14 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     color: colors.textTertiary,
   },
   onThisDaySection: {
-    marginBottom: 16,
-    paddingBottom: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    marginTop: 8,
+    marginBottom: 12,
   },
   onThisDayHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    marginHorizontal: 18,
     marginBottom: 10,
   },
   onThisDayTitle: {
@@ -230,10 +365,14 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     fontFamily: getFontFamily(settings.fontFamily),
   },
   onThisDayCard: {
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 8,
-    borderLeftWidth: 3,
+    width: 246,
+    minHeight: 116,
+    padding: 15,
+    borderRadius: 17,
+    marginRight: 10,
+    borderLeftWidth: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.cardBorder,
   },
   onThisDayDate: {
     fontSize: 12,
@@ -257,6 +396,10 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     marginTop: 4,
     fontFamily: getFontFamily(settings.fontFamily),
   },
+  memoryRow: {
+    paddingHorizontal: 16,
+    paddingRight: 26,
+  },
   emptyText: {
     textAlign: 'center',
     fontSize: settings.fontSize,
@@ -265,19 +408,19 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   },
   addButton: {
     position: 'absolute',
-    bottom: 30,
-    right: 30,
+    bottom: 28,
+    right: 22,
     backgroundColor: colors.primary,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 58,
+    height: 58,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 5,
-    shadowColor: colors.primary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.35,
-    shadowRadius: 4,
+    elevation: 6,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 7 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
   },
   selectModeBar: {
     backgroundColor: colors.card,
@@ -294,8 +437,8 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     alignItems: 'center',
     paddingHorizontal: 12,
     paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: colors.background,
+    borderRadius: 999,
+    backgroundColor: colors.surfaceMuted,
     gap: 4,
   },
   moveBarText: {
@@ -313,7 +456,7 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   },
   modalContent: {
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 22,
     padding: 24,
     width: '100%',
     maxWidth: 400,
@@ -329,7 +472,7 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   modalInput: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 8,
+    borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: settings.fontSize,
@@ -372,7 +515,7 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   iconOption: {
     width: 40,
     height: 40,
-    borderRadius: 8,
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -385,10 +528,10 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   modalButton: {
     paddingHorizontal: 16,
     paddingVertical: 10,
-    borderRadius: 8,
+    borderRadius: 12,
   },
   modalButtonCancel: {
-    backgroundColor: colors.tagBg,
+    backgroundColor: colors.surfaceMuted,
   },
   modalButtonConfirm: {},
   modalButtonDanger: {
@@ -410,8 +553,8 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
     flexDirection: 'row',
     alignItems: 'center',
     padding: 16,
-    backgroundColor: colors.tagBg,
-    borderRadius: 12,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: 14,
     marginBottom: 10,
     gap: 12,
   },
@@ -433,8 +576,8 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   modalBtnCancelSmall: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: colors.input,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceMuted,
     alignItems: 'center',
   },
   modalBtnCancelSmallText: {
@@ -444,18 +587,19 @@ const useStyles = (colors: ThemeColors, settings: { fontSize: number; fontFamily
   modalBtnConfirm: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 12,
     backgroundColor: colors.primary,
     alignItems: 'center',
   },
   modalBtnConfirmText: {
     fontSize: 16,
-    color: '#fff',
+    color: colors.onPrimary,
     fontWeight: '600',
   },
 });
 
 const DiaryListScreen = () => {
+  const insets = useSafeAreaInsets();
   const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
   const [onThisDayEntries, setOnThisDayEntries] = useState<DiaryEntry[]>([]);
   const [folders, setFolders] = useState<DiaryFolder[]>([]);
@@ -478,12 +622,26 @@ const DiaryListScreen = () => {
   const [userHasPassword, setUserHasPassword] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [unlockedIds, setUnlockedIds] = useState<Set<string>>(new Set());
+  const [sortBy, setSortBy] = useState<'updatedAt' | 'createdAt' | 'title'>('updatedAt');
 
+  const SORT_OPTIONS = [
+    { key: 'updatedAt' as const, label: '最近修改', icon: 'update' },
+    { key: 'createdAt' as const, label: '创建时间', icon: 'schedule' },
+    { key: 'title' as const, label: '标题排序', icon: 'sort-by-alpha' },
+  ];
+
+  const handleCycleSort = () => {
+    setSortBy((prev) => {
+      const idx = SORT_OPTIONS.findIndex((o) => o.key === prev);
+      return SORT_OPTIONS[(idx + 1) % SORT_OPTIONS.length].key;
+    });
+  };
 
   const database = useDatabase();
   const navigation = useNavigation<DiaryListScreenNavigationProp>();
   const { settings } = useSettings();
   const colors = useThemeColors();
+  const isDark = useIsDarkTheme();
 
   const styles = useStyles(colors, settings);
 
@@ -523,7 +681,16 @@ const DiaryListScreen = () => {
         });
       }
 
-      setDiaryEntries(entries);
+      // Apply sort
+      const sorted = [...entries].sort((a, b) => {
+        if (sortBy === 'title') {
+          return (a.title || '').localeCompare(b.title || '', 'zh');
+        }
+        const aDate = sortBy === 'createdAt' ? a.createdAt : a.updatedAt;
+        const bDate = sortBy === 'createdAt' ? b.createdAt : b.updatedAt;
+        return new Date(bDate).getTime() - new Date(aDate).getTime();
+      });
+      setDiaryEntries(sorted);
 
       // Load "on this day" entries
       const today = new Date();
@@ -531,17 +698,21 @@ const DiaryListScreen = () => {
       const thisDayEntries = await database.listEntriesByMonthDay(monthDay);
       // Exclude current year entries (they're already in the main list)
       const currentYear = today.getFullYear();
-      setOnThisDayEntries(thisDayEntries.filter((e) => {
-        const year = parseInt(e.createdAt.slice(0, 4), 10);
-        return year < currentYear;
-      }));
+      setOnThisDayEntries(
+        thisDayEntries
+          .filter((e) => parseInt(e.createdAt.slice(0, 4), 10) < currentYear)
+          .map((e) => ({
+            ...e,
+            locked: !!e.locked || (!!e.folderId && lockedIds.includes(e.folderId)),
+          }))
+      );
     } catch (error) {
       console.error('Failed to load data', error);
       Alert.alert('错误', '加载数据失败。');
     } finally {
       setIsLoading(false);
     }
-  }, [database, searchQuery, activeFolderId, unlockedIds]);
+  }, [database, searchQuery, activeFolderId, unlockedIds, sortBy]);
 
   useFocusEffect(
     useCallback(() => {
@@ -748,6 +919,7 @@ const DiaryListScreen = () => {
   useEffect(() => {
     if (isSelectMode) {
       navigation.setOptions({
+        headerShown: true,
         title: `已选 ${selectedIds.size} 项`,
         headerLeft: () => (
           <TouchableOpacity onPress={exitSelectMode} style={styles.headerButton}>
@@ -770,10 +942,14 @@ const DiaryListScreen = () => {
       });
     } else {
       navigation.setOptions({
+        headerShown: false,
         title: '我的日记',
         headerLeft: undefined,
         headerRight: () => (
           <View style={styles.headerActions}>
+            <TouchableOpacity onPress={handleCycleSort} style={styles.headerButton}>
+              <MaterialIcons name={SORT_OPTIONS.find((o) => o.key === sortBy)?.icon as any} size={22} color={colors.primary} />
+            </TouchableOpacity>
             <TouchableOpacity onPress={() => navigation.navigate('Timeline')} style={styles.headerButton}>
               <MaterialIcons name="timeline" size={24} color={colors.primary} />
             </TouchableOpacity>
@@ -814,10 +990,26 @@ const DiaryListScreen = () => {
     return folders.find((f) => f.id === folderId)?.name ?? null;
   };
 
+  const renderRightActions = (item: DiaryEntry) => (
+    <TouchableOpacity
+      style={{ backgroundColor: colors.danger, justifyContent: 'center', alignItems: 'center', width: 70, borderRadius: 8, marginVertical: 5, marginRight: 2 }}
+      onPress={() => {
+        Alert.alert('移入回收站', `确定将「${item.title || '无标题'}」移入回收站？`, [
+          { text: '取消', style: 'cancel' },
+          { text: '删除', style: 'destructive', onPress: async () => { await database.deleteEntry(item.id); await loadData(); } },
+        ]);
+      }}
+    >
+      <MaterialIcons name="delete" size={24} color="#fff" />
+      <Text style={{ color: '#fff', fontSize: 11, marginTop: 2 }}>删除</Text>
+    </TouchableOpacity>
+  );
+
   const renderItem = ({ item }: { item: DiaryEntry }) => {
     const isSelected = selectedIds.has(item.id);
+    const isProtected = !!item.locked;
 
-    return (
+    const card = (
       <TouchableOpacity
         style={[styles.entryItem, isSelected && styles.entryItemSelected]}
         onPress={() => {
@@ -843,25 +1035,40 @@ const DiaryListScreen = () => {
             />
           </TouchableOpacity>
         )}
+        <View style={styles.dateRail}>
+          <Text style={styles.dateDay}>{format(new Date(item.createdAt), 'd')}</Text>
+          <Text style={styles.dateWeek}>
+            {format(new Date(item.createdAt), 'M月')} / 周{'日一二三四五六'[new Date(item.createdAt).getDay()]}
+          </Text>
+        </View>
         <View style={styles.entryContent}>
           <View style={styles.entryTitleRow}>
             {item.isPinned && <MaterialIcons name="push-pin" size={14} color={colors.primary} style={styles.pinIcon} />}
-            {item.mood && <Text style={{ fontSize: 16, marginRight: 4 }}>{MOOD_OPTIONS.find((m) => m.emoji === item.mood)?.emoji}</Text>}
-            <Text style={[styles.entryTitle, { fontSize: settings.fontSize + 2 }]} numberOfLines={1}>{item.title || '无标题'}</Text>
+            {item.locked && <MaterialIcons name="lock" size={14} color={colors.danger} style={styles.pinIcon} />}
+            {!isProtected && item.mood && <Text style={{ fontSize: 16, marginRight: 4 }}>{MOOD_OPTIONS.find((m) => m.emoji === item.mood)?.emoji}</Text>}
+            <Text style={[styles.entryTitle, { fontSize: settings.fontSize + 2 }]} numberOfLines={1}>{isProtected ? '已锁定日记' : (item.title || '无标题')}</Text>
           </View>
-          <Text style={styles.entryDate}>{format(new Date(item.createdAt), 'yyyy年MM月dd日')}</Text>
           {item.folderId && (
             <Text style={styles.entryFolder}>📁 {getFolderName(item.folderId)}</Text>
           )}
-          <Text style={[styles.entrySnippet, { fontSize: settings.fontSize - 2 }]} numberOfLines={2}>{item.content || '没有正文'}</Text>
-          {item.tags.length > 0 && (
-            <View style={styles.entryTags}>
-              {item.tags.map((tag) => (
-                <Text key={tag} style={styles.tag}>{tag}</Text>
-              ))}
-            </View>
-          )}
+          <Text style={[styles.entrySnippet, { fontSize: settings.fontSize - 2 }]} numberOfLines={2}>
+            {isProtected ? '解锁后查看内容' : (item.content || '没有正文')}
+          </Text>
+          <View style={styles.entryMetaRow}>
+            {!isProtected && item.tags.length > 0 && (
+              <View style={styles.entryTags}>
+                {item.tags.slice(0, 3).map((tag) => (
+                  <Text key={tag} style={styles.tag}>{tag}</Text>
+                ))}
+                {item.tags.length > 3 && <Text style={styles.tag}>+{item.tags.length - 3}</Text>}
+              </View>
+            )}
+            {!isProtected && <Text style={styles.entryWordCount}>{item.content.length}字</Text>}
+          </View>
         </View>
+        {!isProtected && item.imageUris?.[0] && (
+          <Image source={{ uri: item.imageUris[0] }} style={styles.entryCover} />
+        )}
         {!isSelectMode && (
           <View style={styles.entryRightActions}>
             <TouchableOpacity onPress={() => handleTogglePin(item.id)} style={styles.pinBtn}>
@@ -871,6 +1078,17 @@ const DiaryListScreen = () => {
           </View>
         )}
       </TouchableOpacity>
+    );
+
+    if (isSelectMode) return card;
+
+    return (
+      <Swipeable
+        renderRightActions={() => renderRightActions(item)}
+        overshootRight={false}
+      >
+        {card}
+      </Swipeable>
     );
   };
 
@@ -1112,16 +1330,39 @@ const DiaryListScreen = () => {
 
   return (
     <View style={styles.container}>
+      <StarryBackground />
       {!isSelectMode && (
-        <View style={styles.fixedHeader}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="搜索标题、正文或标签"
-            placeholderTextColor={colors.placeholder}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            returnKeyType="search"
-          />
+        <View style={[styles.fixedHeader, { paddingTop: insets.top + 8, backgroundColor: isDark ? 'transparent' : colors.background }]}>
+          <View style={styles.pageHero}>
+            <Text style={styles.pageTitle}>我的日记</Text>
+            <View style={styles.heroActions}>
+              <TouchableOpacity style={styles.heroButton} onPress={handleCycleSort} accessibilityLabel="切换排序">
+                <MaterialIcons name={SORT_OPTIONS.find((o) => o.key === sortBy)?.icon as any} size={23} color={colors.text} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.heroButton} onPress={() => navigation.navigate('Timeline')} accessibilityLabel="时间线">
+                <MaterialIcons name="timeline" size={24} color={colors.text} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.heroButton} onPress={() => setShowExportModal(true)} accessibilityLabel="更多">
+                <MaterialIcons name="more-horiz" size={25} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+          </View>
+          <View style={styles.searchShell}>
+            <MaterialIcons name="search" size={21} color={colors.placeholder} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="搜索标题、正文或标签"
+              placeholderTextColor={colors.placeholder}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              returnKeyType="search"
+            />
+            {!!searchQuery && (
+              <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={10}>
+                <MaterialIcons name="cancel" size={19} color={colors.placeholder} />
+              </TouchableOpacity>
+            )}
+          </View>
           {renderFolderTabs()}
         </View>
       )}
@@ -1141,26 +1382,28 @@ const DiaryListScreen = () => {
                 <MaterialIcons name="history" size={18} color={colors.primary} />
                 <Text style={[styles.onThisDayTitle, { color: colors.primary }]}>那年今日</Text>
               </View>
-              {onThisDayEntries.slice(0, 3).map((entry) => (
-                <TouchableOpacity
-                  key={entry.id}
-                  style={[styles.onThisDayCard, { backgroundColor: colors.card, borderLeftColor: colors.primary }]}
-                  activeOpacity={0.7}
-                  onPress={() => navigation.navigate('DiaryDetail', { entryId: entry.id })}
-                >
-                  <Text style={[styles.onThisDayDate, { color: colors.placeholder }]}>
-                    {entry.createdAt.slice(0, 4)}年{parseInt(entry.createdAt.slice(5, 7), 10)}月{parseInt(entry.createdAt.slice(8, 10), 10)}日
-                  </Text>
-                  <Text style={[styles.onThisDayEntryTitle, { color: colors.text }]} numberOfLines={1}>
-                    {entry.title || '无标题'}
-                  </Text>
-                  {entry.content ? (
-                    <Text style={[styles.onThisDayContent, { color: colors.textSecondary }]} numberOfLines={2}>
-                      {entry.content.replace(/[#*_~`>\-\[\]()!]/g, '').slice(0, 60)}
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.memoryRow}>
+                {onThisDayEntries.slice(0, 3).map((entry) => (
+                  <TouchableOpacity
+                    key={entry.id}
+                    style={[styles.onThisDayCard, { backgroundColor: colors.card, borderLeftColor: colors.brandSecondary }]}
+                    activeOpacity={0.75}
+                    onPress={() => navigation.navigate('DiaryDetail', { entryId: entry.id })}
+                  >
+                    <Text style={[styles.onThisDayDate, { color: colors.brandSecondary }]}>
+                      {entry.createdAt.slice(0, 4)}年{parseInt(entry.createdAt.slice(5, 7), 10)}月{parseInt(entry.createdAt.slice(8, 10), 10)}日
                     </Text>
-                  ) : null}
-                </TouchableOpacity>
-              ))}
+                    <Text style={[styles.onThisDayEntryTitle, { color: colors.text }]} numberOfLines={1}>
+                      {entry.locked ? '已锁定日记' : (entry.title || '无标题')}
+                    </Text>
+                    {!entry.locked && entry.content ? (
+                      <Text style={[styles.onThisDayContent, { color: colors.textSecondary }]} numberOfLines={2}>
+                        {entry.content.replace(/[#*_~`>\-\[\]()!]/g, '').slice(0, 60)}
+                      </Text>
+                    ) : null}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
               {onThisDayEntries.length > 3 && (
                 <Text style={[styles.onThisDayMore, { color: colors.placeholder }]}>还有 {onThisDayEntries.length - 3} 篇...</Text>
               )}
@@ -1168,11 +1411,28 @@ const DiaryListScreen = () => {
           ) : null
         }
         ListEmptyComponent={
-          <View style={{ alignItems: 'center' }}>
-            <Text style={styles.emptyText}>
-              {searchQuery.trim() ? '没有匹配的日记。' : activeFolderId !== undefined ? '这个日记夹里还没有日记。' : '还没有日记，点右下角开始记录。'}
-            </Text>
+          isLoading ? (
+            <LoadingState label="正在整理日记…" />
+          ) : (
+          <View>
+            <EmptyState
+              icon={searchQuery.trim() ? 'search-off' : 'edit-note'}
+              title={searchQuery.trim() ? '没有匹配的日记' : activeFolderId !== undefined ? '这个日记夹还没有内容' : '开始写第一篇日记'}
+              description={searchQuery.trim() ? '换一个关键词试试看' : '把今天值得记住的片刻写下来'}
+            />
+            {!searchQuery.trim() && (
+              <TouchableOpacity
+                style={styles.emptyPrompt}
+                activeOpacity={0.8}
+                onPress={() => navigation.navigate('DiaryDetail', {})}
+              >
+                <Text style={styles.emptyPromptEyebrow}>TODAY'S PROMPT</Text>
+                <Text style={styles.emptyPromptTitle}>今天，有什么让你想停下来记住？</Text>
+                <Text style={styles.emptyPromptText}>不需要完整，也不用深刻。一句话就是一篇日记的开始。</Text>
+              </TouchableOpacity>
+            )}
           </View>
+          )
         }
       />
       {isCurrentFolderLocked && (

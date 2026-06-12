@@ -9,6 +9,7 @@ export interface AppSettings {
   fontFamily: string;
   nickname: string;
   avatarUri: string | null;
+  backgroundImageUri: string | null;
   accentColor: string;
 }
 
@@ -20,7 +21,21 @@ const defaultSettings: AppSettings = {
   fontFamily: 'system',
   nickname: '小主人',
   avatarUri: null,
-  accentColor: '#007AFF',
+  backgroundImageUri: null,
+  accentColor: 'sage',
+};
+
+const LEGACY_ACCENT_IDS: Record<string, string> = {
+  '#007AFF': 'blue',
+  '#5856D6': 'indigo',
+  '#AF52DE': 'purple',
+  '#FF2D55': 'pink',
+  '#FF3B30': 'red',
+  '#FF9500': 'orange',
+  '#FFCC00': 'yellow',
+  '#34C759': 'green',
+  '#5AC8FA': 'teal',
+  '#32ADE6': 'cyan',
 };
 
 interface SettingsContextType {
@@ -46,7 +61,8 @@ export const SettingsProvider = ({ children }: { children: React.ReactNode }) =>
         const raw = await AsyncStorage.getItem(SETTINGS_KEY);
         if (raw) {
           const parsed = JSON.parse(raw);
-          setSettings({ ...defaultSettings, ...parsed });
+          const accentColor = LEGACY_ACCENT_IDS[parsed.accentColor] ?? parsed.accentColor ?? defaultSettings.accentColor;
+          setSettings({ ...defaultSettings, ...parsed, accentColor });
         }
       } catch (e) {
         console.error('Failed to load settings', e);

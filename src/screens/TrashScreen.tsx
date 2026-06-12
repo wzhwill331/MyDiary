@@ -7,6 +7,8 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useDatabase } from '../services/database';
 import { useThemeColors } from '../services/theme';
 import { DiaryEntry } from '../types/diary';
+import { getLockedFolderIds } from '../services/password';
+import { EmptyState, LoadingState, ScreenScaffold } from '../components/ui';
 
 type Props = {
   navigation: NativeStackNavigationProp<any>;
@@ -21,8 +23,14 @@ const TrashScreen = ({ navigation }: Props) => {
   const loadTrash = useCallback(async () => {
     try {
       setIsLoading(true);
-      const data = await database.listTrashedEntries();
-      setEntries(data);
+      const [data, lockedFolderIds] = await Promise.all([
+        database.listTrashedEntries(),
+        getLockedFolderIds(),
+      ]);
+      setEntries(data.map((entry) => ({
+        ...entry,
+        locked: !!entry.locked || (!!entry.folderId && lockedFolderIds.includes(entry.folderId)),
+      })));
     } catch (error) {
       console.error('Failed to load trash', error);
     } finally {
@@ -83,10 +91,10 @@ const TrashScreen = ({ navigation }: Props) => {
   const renderItem = ({ item }: { item: DiaryEntry }) => (
     <View style={styles.entryItem}>
       <View style={styles.entryContent}>
-        <Text style={styles.entryTitle} numberOfLines={1}>{item.title || '无标题'}</Text>
-        <Text style={styles.entrySnippet} numberOfLines={1}>{item.content || '没有正文'}</Text>
+        <Text style={styles.entryTitle} numberOfLines={1}>{item.locked ? '已锁定日记' : (item.title || '无标题')}</Text>
+        <Text style={styles.entrySnippet} numberOfLines={1}>{item.locked ? '内容已隐藏' : (item.content || '没有正文')}</Text>
         <Text style={styles.entryDate}>
-          删除于 {format(new Date(item.updatedAt), 'MM/dd HH:mm')}
+          删除于 {format(new Date(item.deletedAt || item.updatedAt), 'MM/dd HH:mm')}
         </Text>
       </View>
       <View style={styles.entryActions}>
@@ -101,7 +109,7 @@ const TrashScreen = ({ navigation }: Props) => {
   );
 
   return (
-    <View style={styles.container}>
+    <ScreenScaffold style={styles.container}>
       {entries.length > 0 && (
         <TouchableOpacity style={styles.emptyTrashBtn} onPress={handleEmptyTrash}>
           <MaterialIcons name="delete-sweep" size={18} color={colors.danger} />
@@ -116,13 +124,12 @@ const TrashScreen = ({ navigation }: Props) => {
         onRefresh={loadTrash}
         contentContainerStyle={entries.length === 0 ? styles.emptyContainer : styles.listContent}
         ListEmptyComponent={
-          <View style={styles.emptyView}>
-            <MaterialIcons name="delete-outline" size={64} color={colors.placeholder} />
-            <Text style={styles.emptyText}>回收站是空的</Text>
-          </View>
+          isLoading
+            ? <LoadingState label="正在读取回收站…" />
+            : <EmptyState icon="delete-outline" title="回收站是空的" description="删除的日记会暂时保留在这里" />
         }
       />
-    </View>
+    </ScreenScaffold>
   );
 };
 
@@ -136,24 +143,33 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>) => StyleSheet.cre
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.hairline,
+    paddingVertical: 10,
+    marginHorizontal: 16,
+    marginTop: 10,
+    borderRadius: 999,
+    backgroundColor: colors.surfaceMuted,
   },
   emptyTrashText: {
     fontSize: 14,
     color: colors.danger,
   },
   listContent: {
-    padding: 12,
+    padding: 16,
   },
   entryItem: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.card,
-    padding: 14,
-    marginVertical: 5,
-    borderRadius: 10,
+    padding: 16,
+    marginVertical: 7,
+    borderRadius: 17,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.cardBorder,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 1,
   },
   entryContent: {
     flex: 1,

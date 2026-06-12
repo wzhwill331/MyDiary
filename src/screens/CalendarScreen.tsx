@@ -9,6 +9,9 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useDatabase } from '../services/database';
 import { useThemeColors } from '../services/theme';
 import { DiaryEntry, MOOD_OPTIONS } from '../types/diary';
+import { getLockedFolderIds } from '../services/password';
+import { EmptyState } from '../components/ui';
+import { StarryBackground } from '../components/StarryBackground';
 
 type Props = {
   navigation: NativeStackNavigationProp<any>;
@@ -34,9 +37,11 @@ const CalendarScreen = ({ navigation }: Props) => {
   const loadMonthData = useCallback(async () => {
     try {
       const allEntries = await database.listEntries();
+      const lockedFolderIds = await getLockedFolderIds();
       const map: Record<string, number> = {};
       const moodMap: Record<string, string> = {};
       for (const entry of allEntries) {
+        if (entry.locked || (entry.folderId && lockedFolderIds.includes(entry.folderId))) continue;
         const dateKey = format(new Date(entry.createdAt), 'yyyy-MM-dd');
         map[dateKey] = (map[dateKey] || 0) + 1;
         if (entry.mood) {
@@ -62,7 +67,9 @@ const CalendarScreen = ({ navigation }: Props) => {
     try {
       const dateStr = format(date, 'yyyy-MM-dd');
       const allEntries = await database.listEntries();
+      const lockedFolderIds = await getLockedFolderIds();
       const dayEntries = allEntries.filter((e) => {
+        if (e.locked || (e.folderId && lockedFolderIds.includes(e.folderId))) return false;
         const created = format(new Date(e.createdAt), 'yyyy-MM-dd');
         const updated = format(new Date(e.updatedAt), 'yyyy-MM-dd');
         return created === dateStr || updated === dateStr;
@@ -88,6 +95,23 @@ const CalendarScreen = ({ navigation }: Props) => {
   const monthEnd = endOfMonth(currentMonth);
   const days = eachDayOfInterval({ start: monthStart, end: monthEnd });
   const startPadding = getDay(monthStart);
+  const recordedDays = days.filter((day) => (dateEntryMap[format(day, 'yyyy-MM-dd')] || 0) > 0);
+  const monthEntryCount = days.reduce((total, day) => total + (dateEntryMap[format(day, 'yyyy-MM-dd')] || 0), 0);
+  const moodCounts = days.reduce<Record<string, number>>((counts, day) => {
+    const mood = dateMoodMap[format(day, 'yyyy-MM-dd')];
+    if (mood) counts[mood] = (counts[mood] || 0) + 1;
+    return counts;
+  }, {});
+  const leadingMood = Object.entries(moodCounts).sort((a, b) => b[1] - a[1])[0];
+  const streak = (() => {
+    let count = 0;
+    const cursor = new Date();
+    while ((dateEntryMap[format(cursor, 'yyyy-MM-dd')] || 0) > 0) {
+      count += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    return count;
+  })();
 
   useEffect(() => {
     if (showPicker) {
@@ -199,6 +223,7 @@ const CalendarScreen = ({ navigation }: Props) => {
                 styles.dayCell,
                 isSelected && styles.dayCellSelected,
                 isTodayDate && !isSelected && styles.dayCellToday,
+                !isSelected && dateMoodMap[dateKey] && { backgroundColor: (MOOD_OPTIONS.find((m) => m.emoji === dateMoodMap[dateKey])?.color || colors.primary) + '18' },
               ]}
               onPress={() => setSelectedDate(day)}
             >
@@ -238,10 +263,29 @@ const CalendarScreen = ({ navigation }: Props) => {
 
   return (
     <View style={styles.container}>
+      <StarryBackground />
       {renderCalendar()}
       <View style={styles.dayHeader}>
         <Text style={styles.dayTitle}>{format(selectedDate, 'M月d日 EEEE', { locale: zhCN })}</Text>
         <Text style={styles.dayCount}>{entries.length} 篇日记</Text>
+      </View>
+      <View style={styles.summaryRow}>
+        <View style={styles.summaryCard}>
+          <Text style={styles.summaryLabel}>本月记录</Text>
+          <Text style={styles.summaryValue}>{monthEntryCount}</Text>
+          <Text style={styles.summaryHint}>{recordedDays.length} 个有记录的日子</Text>
+        </View>
+        <View style={styles.summaryCard}>
+          <Text style={styles.summaryLabel}>连续记录</Text>
+          <View style={styles.summaryMoodRow}>
+            <Text style={styles.summaryValue}>{streak}</Text>
+            <Text style={styles.summaryUnit}>天</Text>
+            {leadingMood && <Text style={styles.summaryEmoji}>{leadingMood[0]}</Text>}
+          </View>
+          <Text style={styles.summaryHint}>
+            {leadingMood ? `本月最常见心情 · ${leadingMood[1]} 天` : '从今天写下一笔开始'}
+          </Text>
+        </View>
       </View>
       <FlatList
         data={entries}
@@ -249,7 +293,7 @@ const CalendarScreen = ({ navigation }: Props) => {
         renderItem={renderItem}
         contentContainerStyle={entries.length === 0 ? styles.emptyContainer : styles.listContent}
         ListEmptyComponent={
-          <Text style={styles.emptyText}>这天没有日记</Text>
+          <EmptyState icon="event-note" title="这天还没有记录" description="选一个有心情标记的日期，或去写下今天" />
         }
       />
     </View>
@@ -264,10 +308,19 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, topInset: number)
   },
   calendar: {
     backgroundColor: colors.card,
-    paddingTop: 12,
-    paddingBottom: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.hairline,
+    paddingTop: 10,
+    paddingBottom: 6,
+    marginHorizontal: 12,
+    marginTop: 10,
+    marginBottom: 4,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.cardBorder,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.035,
+    shadowRadius: 10,
+    elevation: 1,
   },
   monthNav: {
     flexDirection: 'row',
@@ -277,7 +330,7 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, topInset: number)
     paddingVertical: 8,
   },
   monthTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: '700',
     color: colors.text,
   },
@@ -303,7 +356,7 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, topInset: number)
     aspectRatio: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    borderRadius: 20,
+    borderRadius: 14,
   },
   dayCellSelected: {
     backgroundColor: colors.primary,
@@ -348,8 +401,8 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, topInset: number)
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 13,
   },
   dayTitle: {
     fontSize: 16,
@@ -361,15 +414,69 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, topInset: number)
     color: colors.textTertiary,
   },
   listContent: {
-    padding: 12,
+    paddingHorizontal: 14,
+    paddingBottom: 28,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingBottom: 6,
+  },
+  summaryCard: {
+    flex: 1,
+    minHeight: 88,
+    padding: 13,
+    borderRadius: 15,
+    backgroundColor: colors.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.cardBorder,
+  },
+  summaryLabel: {
+    fontSize: 12,
+    color: colors.textTertiary,
+  },
+  summaryValue: {
+    marginTop: 5,
+    fontSize: 28,
+    lineHeight: 32,
+    fontWeight: '700',
+    color: colors.brandSecondary,
+  },
+  summaryUnit: {
+    marginLeft: 4,
+    marginBottom: 4,
+    fontSize: 13,
+    color: colors.textSecondary,
+  },
+  summaryMoodRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+  },
+  summaryEmoji: {
+    marginLeft: 'auto',
+    marginBottom: 3,
+    fontSize: 22,
+  },
+  summaryHint: {
+    marginTop: 3,
+    fontSize: 11,
+    color: colors.placeholder,
   },
   entryItem: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.card,
-    padding: 14,
-    marginVertical: 5,
-    borderRadius: 10,
+    padding: 16,
+    marginVertical: 7,
+    borderRadius: 17,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.cardBorder,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 1,
   },
   entryContent: {
     flex: 1,
@@ -397,14 +504,14 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, topInset: number)
   // Picker modal
   pickerOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    backgroundColor: colors.modalOverlay,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
   },
   pickerContent: {
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 22,
     padding: 24,
     width: '100%',
     maxWidth: 320,
@@ -426,8 +533,8 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, topInset: number)
   pickerWheelCol: {
     flex: 1,
     overflow: 'hidden',
-    borderRadius: 12,
-    backgroundColor: colors.input,
+    borderRadius: 16,
+    backgroundColor: colors.surfaceMuted,
   },
   pickerHighlight: {
     position: 'absolute',
@@ -436,8 +543,8 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, topInset: number)
     right: 4,
     height: 44,
     marginTop: -22,
-    borderRadius: 8,
-    backgroundColor: colors.card,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceElevated,
     borderWidth: 1,
     borderColor: colors.border,
     zIndex: 0,
@@ -469,8 +576,8 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, topInset: number)
   pickerCancelBtn: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: colors.input,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceMuted,
     alignItems: 'center',
   },
   pickerCancelText: {
@@ -480,13 +587,13 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, topInset: number)
   pickerConfirmBtn: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 12,
     backgroundColor: colors.primary,
     alignItems: 'center',
   },
   pickerConfirmBtnText: {
     fontSize: 16,
-    color: '#fff',
+    color: colors.onPrimary,
     fontWeight: '600',
   },
 });

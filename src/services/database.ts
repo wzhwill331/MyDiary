@@ -31,9 +31,11 @@ type DiaryEntryRow = {
   updatedAt: string | null;
   tags: string | null;
   isPinned: number | null;
+  locked: number | null;
   mood: string | null;
   imageUris: string | null;
   background: string | null;
+  deletedAt: string | null;
 };
 
 type DiaryFolderRow = {
@@ -79,6 +81,8 @@ const rowToDiaryEntry = (row: DiaryEntryRow): DiaryEntry => ({
   updatedAt: row.updatedAt ?? row.createdAt ?? new Date(0).toISOString(),
   tags: parseTags(row.tags),
   isPinned: row.isPinned === 1,
+  locked: row.locked === 1,
+  deletedAt: row.deletedAt ?? null,
   mood: row.mood ?? null,
   imageUris: row.imageUris ? JSON.parse(row.imageUris) : [],
   background: row.background ?? null,
@@ -111,6 +115,14 @@ const normalizeImportedEntry = (value: unknown): DiaryEntry | null => {
     createdAt,
     updatedAt,
     tags: rawTags.filter((tag): tag is string => typeof tag === 'string'),
+    isPinned: source.isPinned === true,
+    locked: source.locked === true,
+    deletedAt: typeof source.deletedAt === 'string' ? source.deletedAt : null,
+    mood: typeof source.mood === 'string' ? source.mood : null,
+    imageUris: Array.isArray(source.imageUris)
+      ? source.imageUris.filter((uri): uri is string => typeof uri === 'string')
+      : [],
+    background: typeof source.background === 'string' ? source.background : null,
   };
 };
 
@@ -220,6 +232,13 @@ export const initDatabase = async () => {
   } catch {
     // Column already exists, ignore
   }
+
+  // Migration: add locked column
+  try {
+    await database.execAsync(`ALTER TABLE diary_entries ADD COLUMN locked INTEGER DEFAULT 0;`);
+  } catch {
+    // Column already exists, ignore
+  }
 };
 
 // ==================== Folder CRUD ====================
@@ -302,7 +321,7 @@ export const listEntries = async (folderId?: string | null): Promise<DiaryEntry[
   await initDatabase();
   const database = await openDatabase();
 
-  let query = 'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris, background FROM diary_entries WHERE deletedAt IS NULL';
+  let query = 'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, locked, mood, imageUris, background FROM diary_entries WHERE deletedAt IS NULL';
   const params: string[] = [];
 
   if (folderId === null) {
@@ -326,7 +345,7 @@ export const searchEntries = async (query: string, folderId?: string | null): Pr
   const database = await openDatabase();
   const likeQuery = `%${trimmedQuery}%`;
 
-  let sql = `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris
+  let sql = `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, locked, mood, imageUris, background
      FROM diary_entries
      WHERE deletedAt IS NULL AND (title LIKE ? OR content LIKE ? OR tags LIKE ?)`;
   const params: string[] = [likeQuery, likeQuery, likeQuery];
@@ -348,7 +367,7 @@ export const getEntryById = async (id: string): Promise<DiaryEntry | undefined> 
   await initDatabase();
   const database = await openDatabase();
   const row = await database.getFirstAsync<DiaryEntryRow>(
-    'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris, background FROM diary_entries WHERE id = ?',
+    'SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, locked, mood, imageUris, background FROM diary_entries WHERE id = ?',
     [id]
   );
   return row ? rowToDiaryEntry(row) : undefined;
@@ -425,7 +444,23 @@ export const permanentDeleteEntry = async (id: string): Promise<void> => {
   await database.runAsync('DELETE FROM diary_entries WHERE id = ?', [id]);
 };
 
-export const getDiaryStats = async (): Promise<{ totalEntries: number; monthEntries: number; totalChars: number; streak: number }> => {
+export const getAllTags = async (): Promise<string[]> => {
+  await initDatabase();
+  const database = await openDatabase();
+  const rows = await database.getAllAsync<{ tags: string | null }>(
+    'SELECT tags FROM diary_entries WHERE deletedAt IS NULL AND tags IS NOT NULL AND tags != "[]"'
+  );
+  const tagSet = new Set<string>();
+  for (const row of rows) {
+    const parsed = parseTags(row.tags);
+    for (const tag of parsed) {
+      tagSet.add(tag);
+    }
+  }
+  return Array.from(tagSet).sort();
+};
+
+export const getDiaryStats = async (): Promise<{ totalEntries: number; monthEntries: number; totalChars: number; streak: number; moodDistribution: Record<string, number> }> => {
   await initDatabase();
   const database = await openDatabase();
 
@@ -467,14 +502,23 @@ export const getDiaryStats = async (): Promise<{ totalEntries: number; monthEntr
     }
   }
 
-  return { totalEntries, monthEntries, totalChars, streak };
+  // Mood distribution
+  const moodRows = await database.getAllAsync<{ mood: string | null; cnt: number }>(
+    'SELECT mood, COUNT(*) as cnt FROM diary_entries WHERE deletedAt IS NULL AND mood IS NOT NULL GROUP BY mood ORDER BY cnt DESC'
+  );
+  const moodDistribution: Record<string, number> = {};
+  for (const row of moodRows) {
+    if (row.mood) moodDistribution[row.mood] = row.cnt;
+  }
+
+  return { totalEntries, monthEntries, totalChars, streak, moodDistribution };
 };
 
 export const listEntriesByDate = async (dateStr: string): Promise<DiaryEntry[]> => {
   await initDatabase();
   const database = await openDatabase();
   const rows = await database.getAllAsync<DiaryEntryRow>(
-    `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, mood, imageUris, background FROM diary_entries
+    `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, locked, mood, imageUris, background FROM diary_entries
      WHERE deletedAt IS NULL AND (createdAt LIKE ? OR updatedAt LIKE ?)
      ORDER BY updatedAt DESC`,
     [`${dateStr}%`, `${dateStr}%`]
@@ -484,13 +528,15 @@ export const listEntriesByDate = async (dateStr: string): Promise<DiaryEntry[]> 
 
 export const listEntriesByMonthDay = async (monthDay: string): Promise<DiaryEntry[]> => {
   await initDatabase();
-  const allEntries = await listEntries();
-  // monthDay format: 'MM-DD'
-  return allEntries.filter((e) => {
-    const d = e.createdAt;
-    // Match pattern like '-05-19' anywhere in the ISO date string
-    return d.includes('-' + monthDay);
-  });
+  const database = await openDatabase();
+  // monthDay format: 'MM-DD' �?use SQLite strftime to extract month-day
+  const rows = await database.getAllAsync<DiaryEntryRow>(
+    `SELECT id, title, content, folderId, createdAt, updatedAt, tags, isPinned, locked, mood, imageUris, background FROM diary_entries
+     WHERE deletedAt IS NULL AND strftime('%m-%d', createdAt) = ?
+     ORDER BY createdAt DESC`,
+    [monthDay]
+  );
+  return rows.map(rowToDiaryEntry);
 };
 
 // Debug: create a test entry for "on this day" feature
@@ -500,23 +546,25 @@ export const togglePinEntry = async (id: string): Promise<void> => {
   await database.runAsync('UPDATE diary_entries SET isPinned = CASE WHEN isPinned = 1 THEN 0 ELSE 1 END WHERE id = ?', [id]);
 };
 
+export const toggleEntryLock = async (id: string): Promise<void> => {
+  await initDatabase();
+  const database = await openDatabase();
+  await database.runAsync('UPDATE diary_entries SET locked = CASE WHEN locked = 1 THEN 0 ELSE 1 END WHERE id = ?', [id]);
+};
+
+export const clearAllEntryLocks = async (): Promise<void> => {
+  await initDatabase();
+  const database = await openDatabase();
+  await database.runAsync('UPDATE diary_entries SET locked = 0 WHERE locked = 1');
+};
+
 export const listTrashedEntries = async (): Promise<DiaryEntry[]> => {
   await initDatabase();
   const database = await openDatabase();
-  const rows = await database.getAllAsync<{ id: string; title: string | null; content: string | null; folderId: string | null; createdAt: string | null; updatedAt: string | null; tags: string | null; deletedAt: string | null; isPinned: number | null }>(
-    'SELECT id, title, content, folderId, createdAt, updatedAt, tags, deletedAt, isPinned FROM diary_entries WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC'
+  const rows = await database.getAllAsync<DiaryEntryRow>(
+    'SELECT id, title, content, folderId, createdAt, updatedAt, tags, deletedAt, isPinned, locked, mood, imageUris, background FROM diary_entries WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC'
   );
-  return rows.map((row) => ({
-    id: row.id,
-    title: row.title ?? '',
-    content: row.content ?? '',
-    folderId: row.folderId ?? null,
-    createdAt: row.createdAt ?? new Date().toISOString(),
-    updatedAt: row.updatedAt ?? new Date().toISOString(),
-    tags: row.tags ? JSON.parse(row.tags) : [],
-    deletedAt: row.deletedAt ?? null,
-    isPinned: row.isPinned === 1,
-  }));
+  return rows.map(rowToDiaryEntry);
 };
 
 export const emptyTrash = async (): Promise<void> => {
@@ -547,7 +595,7 @@ export const moveEntriesToFolder = async (ids: string[], folderId: string | null
 export const exportEntries = async (): Promise<DiaryBackup> => ({
   version: 2,
   exportedAt: new Date().toISOString(),
-  entries: await listEntries(),
+  entries: [...await listEntries(), ...await listTrashedEntries()],
   folders: await listFolders(),
 });
 
@@ -580,8 +628,24 @@ export const importEntries = async (entries: DiaryEntry[], folders: DiaryFolder[
 
     if (!existing) {
       await database.runAsync(
-        'INSERT INTO diary_entries (id, title, content, folderId, createdAt, updatedAt, tags, imageUris) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [entry.id, entry.title, entry.content, entry.folderId, entry.createdAt, entry.updatedAt, tags, '[]']
+        `INSERT INTO diary_entries
+          (id, title, content, folderId, createdAt, updatedAt, tags, imageUris, mood, background, isPinned, locked, deletedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          entry.id,
+          entry.title,
+          entry.content,
+          entry.folderId,
+          entry.createdAt,
+          entry.updatedAt,
+          tags,
+          JSON.stringify(entry.imageUris ?? []),
+          entry.mood ?? null,
+          entry.background ?? null,
+          entry.isPinned ? 1 : 0,
+          entry.locked ? 1 : 0,
+          entry.deletedAt ?? null,
+        ]
       );
       added += 1;
       continue;
@@ -589,8 +653,25 @@ export const importEntries = async (entries: DiaryEntry[], folders: DiaryFolder[
 
     if (new Date(entry.updatedAt).getTime() > new Date(existing.updatedAt).getTime()) {
       await database.runAsync(
-        'UPDATE diary_entries SET title = ?, content = ?, folderId = ?, createdAt = ?, updatedAt = ?, tags = ? WHERE id = ?',
-        [entry.title, entry.content, entry.folderId, entry.createdAt, entry.updatedAt, tags, entry.id]
+        `UPDATE diary_entries
+         SET title = ?, content = ?, folderId = ?, createdAt = ?, updatedAt = ?, tags = ?,
+             imageUris = ?, mood = ?, background = ?, isPinned = ?, locked = ?, deletedAt = ?
+         WHERE id = ?`,
+        [
+          entry.title,
+          entry.content,
+          entry.folderId,
+          entry.createdAt,
+          entry.updatedAt,
+          tags,
+          JSON.stringify(entry.imageUris ?? []),
+          entry.mood ?? null,
+          entry.background ?? null,
+          entry.isPinned ? 1 : 0,
+          entry.locked ? 1 : 0,
+          entry.deletedAt ?? null,
+          entry.id,
+        ]
       );
       updated += 1;
     } else {
@@ -617,9 +698,12 @@ export type DatabaseApi = {
   restoreEntry: typeof restoreEntry;
   permanentDeleteEntry: typeof permanentDeleteEntry;
   togglePinEntry: typeof togglePinEntry;
+  toggleEntryLock: typeof toggleEntryLock;
+  clearAllEntryLocks: typeof clearAllEntryLocks;
   listTrashedEntries: typeof listTrashedEntries;
   listEntriesByDate: typeof listEntriesByDate;
   listEntriesByMonthDay: typeof listEntriesByMonthDay;
+  getAllTags: typeof getAllTags;
   getDiaryStats: typeof getDiaryStats;
   emptyTrash: typeof emptyTrash;
   moveEntriesToFolder: typeof moveEntriesToFolder;
@@ -643,9 +727,12 @@ const databaseApi: DatabaseApi = {
   restoreEntry,
   permanentDeleteEntry,
   togglePinEntry,
+  toggleEntryLock,
+  clearAllEntryLocks,
   listTrashedEntries,
   listEntriesByDate,
   listEntriesByMonthDay,
+  getAllTags,
   getDiaryStats,
   emptyTrash,
   moveEntriesToFolder,

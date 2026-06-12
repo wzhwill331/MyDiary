@@ -15,6 +15,8 @@ import { useDatabase } from '../services/database';
 import { useSettings } from '../services/settings';
 import { useThemeColors, getFontFamily, ThemeColors } from '../services/theme';
 import { DiaryEntry, MOOD_OPTIONS } from '../types/diary';
+import { getLockedFolderIds } from '../services/password';
+import { EmptyState, ScreenScaffold } from '../components/ui';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Timeline'>;
 
@@ -47,7 +49,7 @@ function groupEntriesByDate(entries: DiaryEntry[]): TimelineGroup[] {
 const useStyles = (colors: ThemeColors, fontSize: number, fontFamily: string) =>
   StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
-    listContent: { paddingHorizontal: 16, paddingBottom: 40, paddingTop: 8 },
+    listContent: { paddingHorizontal: 16, paddingBottom: 44, paddingTop: 8 },
     emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 120 },
     emptyText: { fontSize: 16, color: colors.textSecondary, marginTop: 12 },
 
@@ -55,14 +57,14 @@ const useStyles = (colors: ThemeColors, fontSize: number, fontFamily: string) =>
     dateHeader: {
       flexDirection: 'row',
       alignItems: 'center',
-      marginTop: 20,
+      marginTop: 22,
       marginBottom: 10,
       marginLeft: 18,
     },
     dateHeaderText: {
       fontSize: 15,
       fontWeight: '600',
-      color: colors.textSecondary,
+      color: colors.brandSecondary,
       fontFamily,
     },
 
@@ -76,14 +78,14 @@ const useStyles = (colors: ThemeColors, fontSize: number, fontFamily: string) =>
       alignItems: 'center',
     },
     timelineDot: {
-      width: 12,
-      height: 12,
-      borderRadius: 6,
+      width: 14,
+      height: 14,
+      borderRadius: 7,
       backgroundColor: colors.primary,
       marginTop: 18,
     },
     timelineLine: {
-      width: 2,
+      width: 1,
       flex: 1,
       backgroundColor: colors.border,
       minHeight: 8,
@@ -97,10 +99,17 @@ const useStyles = (colors: ThemeColors, fontSize: number, fontFamily: string) =>
     /* Entry card */
     card: {
       backgroundColor: colors.card,
-      borderRadius: 12,
-      padding: 14,
-      borderLeftWidth: 3,
+      borderRadius: 18,
+      padding: 16,
+      borderLeftWidth: 4,
       borderLeftColor: colors.primary,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.cardBorder,
+      shadowColor: colors.shadow,
+      shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.06,
+      shadowRadius: 12,
+      elevation: 2,
     },
     cardTitle: {
       fontSize: 16,
@@ -153,10 +162,16 @@ const TimelineScreen = () => {
   useFocusEffect(
     useCallback(() => {
       (async () => {
-        const entries = await database.listEntries();
-        setGroups(groupEntriesByDate(entries));
+        const [entries, lockedFolderIds] = await Promise.all([
+          database.listEntries(),
+          getLockedFolderIds(),
+        ]);
+        const visibleEntries = entries.filter(
+          (entry) => !entry.locked && !(entry.folderId && lockedFolderIds.includes(entry.folderId))
+        );
+        setGroups(groupEntriesByDate(visibleEntries));
       })();
-    }, [])
+    }, [database])
   );
 
   const styles = useStyles(colors, settings.fontSize, getFontFamily(settings.fontFamily ?? 'system') ?? 'System');
@@ -217,20 +232,17 @@ const TimelineScreen = () => {
   );
 
   return (
-    <View style={styles.container}>
+    <ScreenScaffold style={styles.container}>
       <FlatList
         data={groups}
         keyExtractor={(g) => g.dateStr}
         renderItem={renderGroup}
         contentContainerStyle={groups.length === 0 ? styles.emptyContainer : styles.listContent}
         ListEmptyComponent={
-          <>
-            <MaterialIcons name="timeline" size={48} color={colors.placeholder} />
-            <Text style={styles.emptyText}>还没有日记，去写一篇吧</Text>
-          </>
+          <EmptyState icon="timeline" title="时间线还是空的" description="写下第一篇日记后，回忆会在这里慢慢展开" />
         }
       />
-    </View>
+    </ScreenScaffold>
   );
 };
 

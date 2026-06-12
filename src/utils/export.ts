@@ -1,11 +1,62 @@
 import { File, Paths } from 'expo-file-system';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { Alert, Platform, View } from 'react-native';
 import React from 'react';
 import { DatabaseApi, normalizeBackupPayload } from '../services/database';
 import { DiaryEntry, DiaryFolder } from '../types/diary';
+import { v4 as uuidv4 } from 'uuid';
 
 const EXPORT_FILE_NAME = 'MyDiary_Backup.json';
+
+type BackupImageAsset = {
+  originalUri: string;
+  extension: string;
+  base64: string;
+};
+
+const collectBackupImages = async (entries: DiaryEntry[]): Promise<BackupImageAsset[]> => {
+  const uris = [...new Set(entries.flatMap((entry) => entry.imageUris ?? []))];
+  const assets: BackupImageAsset[] = [];
+  for (const uri of uris) {
+    try {
+      const base64 = await LegacyFileSystem.readAsStringAsync(uri, {
+        encoding: LegacyFileSystem.EncodingType.Base64,
+      });
+      assets.push({
+        originalUri: uri,
+        extension: uri.split('.').pop()?.split('?')[0] || 'jpg',
+        base64,
+      });
+    } catch (error) {
+      console.warn('Skipping unreadable backup image', uri, error);
+    }
+  }
+  return assets;
+};
+
+const restoreBackupImages = async (
+  entries: DiaryEntry[],
+  assets: BackupImageAsset[]
+): Promise<DiaryEntry[]> => {
+  if (assets.length === 0) return entries;
+  const imageDir = `${LegacyFileSystem.documentDirectory}diary-images/`;
+  await LegacyFileSystem.makeDirectoryAsync(imageDir, { intermediates: true });
+  const uriMap = new Map<string, string>();
+
+  for (const asset of assets) {
+    const destination = `${imageDir}${uuidv4()}.${asset.extension || 'jpg'}`;
+    await LegacyFileSystem.writeAsStringAsync(destination, asset.base64, {
+      encoding: LegacyFileSystem.EncodingType.Base64,
+    });
+    uriMap.set(asset.originalUri, destination);
+  }
+
+  return entries.map((entry) => ({
+    ...entry,
+    imageUris: (entry.imageUris ?? []).map((uri) => uriMap.get(uri) ?? uri),
+  }));
+};
 
 // Generate HTML for a single diary entry
 const generateEntryHtml = (entry: DiaryEntry, folderName?: string): string => {
@@ -145,7 +196,14 @@ export const exportDiaryEntriesToJson = async (database: DatabaseApi, selectedId
     const filteredFolders = selectedIds
       ? backup.folders.filter((f) => filteredEntries.some((e) => e.folderId === f.id))
       : backup.folders;
-    const payload = { entries: filteredEntries, folders: filteredFolders };
+    const imageAssets = await collectBackupImages(filteredEntries);
+    const payload = {
+      version: 3,
+      exportedAt: new Date().toISOString(),
+      entries: filteredEntries,
+      folders: filteredFolders,
+      imageAssets,
+    };
     const jsonString = JSON.stringify(payload, null, 2);
     const file = new File(Paths.document, EXPORT_FILE_NAME);
 
@@ -173,9 +231,10 @@ export const exportDiaryEntriesToJson = async (database: DatabaseApi, selectedId
 export const exportDiaryEntriesToHtml = async (database: DatabaseApi, selectedIds?: string[]) => {
   try {
     const backup = await database.exportEntries();
+    const activeEntries = backup.entries.filter((entry) => !entry.deletedAt);
     const filteredEntries = selectedIds
-      ? backup.entries.filter((e) => selectedIds.includes(e.id))
-      : backup.entries;
+      ? activeEntries.filter((e) => selectedIds.includes(e.id))
+      : activeEntries;
     const filteredFolders = selectedIds
       ? backup.folders.filter((f) => filteredEntries.some((e) => e.folderId === f.id))
       : backup.folders;
@@ -236,13 +295,24 @@ export const importDiaryEntriesFromJson = async (database: DatabaseApi) => {
     const rawContent = await file.text();
     const payload = JSON.parse(rawContent) as unknown;
     const { entries, folders } = normalizeBackupPayload(payload);
+    const rawAssets = payload && typeof payload === 'object' && Array.isArray((payload as any).imageAssets)
+      ? (payload as any).imageAssets
+      : [];
+    const imageAssets: BackupImageAsset[] = rawAssets.filter((asset: unknown): asset is BackupImageAsset => {
+      if (!asset || typeof asset !== 'object') return false;
+      const value = asset as Record<string, unknown>;
+      return typeof value.originalUri === 'string'
+        && typeof value.extension === 'string'
+        && typeof value.base64 === 'string';
+    });
+    const restoredEntries = await restoreBackupImages(entries, imageAssets);
 
-    if (entries.length === 0 && folders.length === 0) {
+    if (restoredEntries.length === 0 && folders.length === 0) {
       Alert.alert('导入失败', '没有找到可导入的日记。');
       return;
     }
 
-    const result = await database.importEntries(entries, folders);
+    const result = await database.importEntries(restoredEntries, folders);
     const parts = [`新增 ${result.added} 篇`, `更新 ${result.updated} 篇`, `跳过 ${result.skipped} 篇`];
     if (result.foldersAdded > 0) parts.push(`新增 ${result.foldersAdded} 个日记夹`);
     Alert.alert('导入完成', parts.join('，') + '。');
@@ -253,8 +323,6 @@ export const importDiaryEntriesFromJson = async (database: DatabaseApi) => {
 };
 
 // ==================== Lightweight Frontmatter Parser (no Node.js deps) ====================
-
-import { v4 as uuidv4 } from 'uuid';
 
 /**
  * Simple YAML-like frontmatter stringify (supports strings, string arrays)
@@ -351,9 +419,10 @@ const generateEntryMdWithFrontmatter = (entry: DiaryEntry, folderName?: string):
 export const exportDiaryEntriesToMarkdown = async (database: DatabaseApi, selectedIds?: string[]) => {
   try {
     const backup = await database.exportEntries();
+    const activeEntries = backup.entries.filter((entry) => !entry.deletedAt);
     const filteredEntries = selectedIds
-      ? backup.entries.filter((e) => selectedIds.includes(e.id))
-      : backup.entries;
+      ? activeEntries.filter((e) => selectedIds.includes(e.id))
+      : activeEntries;
     const folderMap = new Map(backup.folders.map((f) => [f.id, f.name]));
 
     const sorted = [...filteredEntries].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());

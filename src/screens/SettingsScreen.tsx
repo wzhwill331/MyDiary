@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useSettings, ThemeMode } from '../services/settings';
 import { useThemeColors, getFontFamily, ACCENT_COLOR_OPTIONS } from '../services/theme';
 import { hasPassword, setPassword, verifyPassword, removePassword, isBiometricAvailable, authenticateWithBiometric } from '../services/password';
+import { StarryBackground } from '../components/StarryBackground';
 
 const FONT_SIZES = [
   { label: '12', value: 12 },
@@ -20,9 +23,9 @@ const FONT_FAMILIES = [
   { label: '楷体', value: 'KaiTi' },
 ];
 const THEME_OPTIONS = [
-  { label: '浅色', value: 'light' as ThemeMode },
-  { label: '深色', value: 'dark' as ThemeMode },
-  { label: '自动', value: 'system' as ThemeMode },
+  { label: '暖纸', value: 'light' as ThemeMode },
+  { label: '星夜', value: 'dark' as ThemeMode },
+  { label: '跟随系统', value: 'system' as ThemeMode },
 ];
 
 const SettingsScreen = () => {
@@ -46,6 +49,59 @@ const SettingsScreen = () => {
   const handleFontFamilyChange = (family: string) => updateSettings({ fontFamily: family });
   const handleThemeChange = (mode: ThemeMode) => updateSettings({ theme: mode });
   const handleAccentColorChange = (colorId: string) => updateSettings({ accentColor: colorId });
+
+  const handlePickBackground = async () => {
+    if (Platform.OS !== 'web') {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('需要照片权限', '请允许访问相册后再选择背景图片。');
+        return;
+      }
+    }
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.9,
+        base64: Platform.OS === 'web',
+      });
+      if (result.canceled || !result.assets[0]) return;
+
+      const asset = result.assets[0];
+      const sourceUri = asset.uri;
+      let savedUri = sourceUri;
+      const directory = FileSystem.documentDirectory
+        ? `${FileSystem.documentDirectory}app-background/`
+        : null;
+
+      if (Platform.OS === 'web' && asset.base64) {
+        savedUri = `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}`;
+      } else if (directory) {
+        await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+        const rawExtension = asset.fileName?.split('.').pop() || asset.mimeType?.split('/').pop() || 'jpg';
+        const extension = rawExtension.replace(/[^a-zA-Z0-9]/g, '') || 'jpg';
+        savedUri = `${directory}background-${Date.now()}.${extension}`;
+        await FileSystem.copyAsync({ from: sourceUri, to: savedUri });
+      }
+
+      const previousUri = settings.backgroundImageUri;
+      await updateSettings({ backgroundImageUri: savedUri });
+      if (directory && previousUri?.startsWith(directory) && previousUri !== savedUri) {
+        await FileSystem.deleteAsync(previousUri, { idempotent: true }).catch(() => {});
+      }
+    } catch (error) {
+      console.error('Failed to set custom background', error);
+      Alert.alert('设置失败', '无法保存这张图片，请换一张后重试。');
+    }
+  };
+
+  const handleClearBackground = async () => {
+    const previousUri = settings.backgroundImageUri;
+    await updateSettings({ backgroundImageUri: null });
+    if (previousUri?.includes('/app-background/')) {
+      await FileSystem.deleteAsync(previousUri, { idempotent: true }).catch(() => {});
+    }
+  };
 
   const handlePasswordMenu = () => {
     if (hasPw) {
@@ -103,17 +159,19 @@ const SettingsScreen = () => {
       {items.map((item) => (
         <TouchableOpacity
           key={String(item.value)}
-          style={[styles.chip, current === item.value && { backgroundColor: colors.text }]}
+          style={[styles.chip, current === item.value && { backgroundColor: colors.primary }]}
           onPress={() => onSelect(item.value)}
         >
-          <Text style={[styles.chipText, current === item.value && { color: colors.card }]}>{item.label}</Text>
+          <Text style={[styles.chipText, current === item.value && { color: colors.onPrimary }]}>{item.label}</Text>
         </TouchableOpacity>
       ))}
     </View>
   );
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <View style={styles.screen}>
+      <StarryBackground />
+      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* Font Size */}
       <View style={styles.section}>
         <Text style={styles.sectionLabel}>字号</Text>
@@ -151,6 +209,31 @@ const SettingsScreen = () => {
               )}
             </TouchableOpacity>
           ))}
+        </View>
+      </View>
+
+      {/* Custom background */}
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>自定义背景</Text>
+        {settings.backgroundImageUri ? (
+          <Image source={{ uri: settings.backgroundImageUri }} style={styles.backgroundPreview} resizeMode="cover" />
+        ) : (
+          <View style={styles.backgroundPlaceholder}>
+            <MaterialIcons name="wallpaper" size={28} color={colors.primary} />
+            <Text style={styles.backgroundPlaceholderText}>未设置背景图片</Text>
+          </View>
+        )}
+        <View style={styles.backgroundActions}>
+          <TouchableOpacity style={styles.backgroundButton} onPress={handlePickBackground}>
+            <MaterialIcons name="photo-library" size={19} color={colors.primary} />
+            <Text style={styles.backgroundButtonText}>{settings.backgroundImageUri ? '更换图片' : '选择图片'}</Text>
+          </TouchableOpacity>
+          {!!settings.backgroundImageUri && (
+            <TouchableOpacity style={styles.backgroundButton} onPress={handleClearBackground}>
+              <MaterialIcons name="delete-outline" size={19} color={colors.danger} />
+              <Text style={[styles.backgroundButtonText, { color: colors.danger }]}>清除</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -262,18 +345,27 @@ const SettingsScreen = () => {
           </View>
         </View>
       )}
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 };
 
 const makeStyles = (colors: ReturnType<typeof useThemeColors>, fontSize: number, fontFamily: string) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: 16, paddingBottom: 40 },
+  screen: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1, backgroundColor: 'transparent' },
+  content: { padding: 18, paddingBottom: 44 },
   section: {
     backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.cardBorder,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    elevation: 1,
   },
   sectionLabel: {
     fontSize: 14,
@@ -291,11 +383,51 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, fontSize: number,
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
   },
   chipText: {
     fontSize: fontSize - 2,
     color: colors.text,
+    fontFamily,
+  },
+  backgroundPreview: {
+    width: '100%',
+    height: 150,
+    borderRadius: 14,
+    backgroundColor: colors.surfaceMuted,
+  },
+  backgroundPlaceholder: {
+    height: 104,
+    borderRadius: 14,
+    backgroundColor: colors.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  backgroundPlaceholderText: {
+    fontSize: 13,
+    color: colors.textTertiary,
+    fontFamily,
+  },
+  backgroundActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  backgroundButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceMuted,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  backgroundButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.primary,
     fontFamily,
   },
   menuRow: {
@@ -310,15 +442,15 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, fontSize: number,
   },
   modalOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: colors.modalOverlay,
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 100,
   },
   modalContent: {
-    width: '80%',
+    width: '88%',
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 22,
     padding: 24,
   },
   modalTitle: {
@@ -332,7 +464,7 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, fontSize: number,
   modalInput: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 8,
+    borderRadius: 14,
     padding: 12,
     fontSize: fontSize,
     color: colors.text,
@@ -348,8 +480,8 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, fontSize: number,
   modalBtnCancel: {
     paddingHorizontal: 20,
     paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: colors.border,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceMuted,
   },
   modalBtnCancelText: {
     fontSize: 15,
@@ -359,7 +491,7 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, fontSize: number,
   modalBtnConfirm: {
     paddingHorizontal: 20,
     paddingVertical: 10,
-    borderRadius: 8,
+    borderRadius: 12,
     backgroundColor: colors.primary,
   },
   modalBtnConfirmText: {
@@ -407,7 +539,7 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, fontSize: number,
     paddingVertical: 12,
     marginTop: 8,
     marginBottom: 4,
-    borderRadius: 8,
+    borderRadius: 12,
     backgroundColor: colors.primary + '15',
   },
   biometricBtnText: {

@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Linking from 'expo-linking';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -19,9 +20,12 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSettings, ThemeMode } from '../services/settings';
 import { useThemeColors } from '../services/theme';
 import { useDatabase } from '../services/database';
-import { hasPassword, setPassword, verifyPassword, removePassword, isBiometricAvailable, authenticateWithBiometric } from '../services/password';
-import { DiaryEntry, DiaryFolder } from '../types/diary';
+import { hasPassword, setPassword, verifyPassword, removePassword, isBiometricAvailable, authenticateWithBiometric, getLockedFolderIds } from '../services/password';
+import { DiaryEntry, DiaryFolder, MOOD_OPTIONS } from '../types/diary';
 import { TEMPLATE_CATEGORIES, DiaryTemplate } from '../types/template';
+import UnlockModal from '../components/UnlockModal';
+import { StatBlock, SurfaceCard } from '../components/ui';
+import { StarryBackground } from '../components/StarryBackground';
 const sponsorQr = require('../../assets/sponsor-qr.webp');
 import {
   exportDiaryEntriesToJson,
@@ -48,17 +52,20 @@ const FONT_FAMILIES = [
 type SelectStep = 'folder' | 'entry';
 
 const MeScreen = () => {
+  const insets = useSafeAreaInsets();
   const { settings, updateSettings } = useSettings();
   const colors = useThemeColors();
   const database = useDatabase();
   const navigation = useNavigation<any>();
   const [showNicknameModal, setShowNicknameModal] = useState(false);
   const [nicknameInput, setNicknameInput] = useState(settings.nickname);
-  const [stats, setStats] = useState({ totalEntries: 0, monthEntries: 0, totalChars: 0, streak: 0 });
+  const [stats, setStats] = useState({ totalEntries: 0, monthEntries: 0, totalChars: 0, streak: 0, moodDistribution: {} as Record<string, number> });
 
   // Export states
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportTargetIds, setExportTargetIds] = useState<string[] | null>(null);
+  const [showExportUnlock, setShowExportUnlock] = useState(false);
+  const [pendingExportFormat, setPendingExportFormat] = useState<'json' | 'html' | 'md' | null>(null);
 
   // Selective export states
   const [showSelectModal, setShowSelectModal] = useState(false);
@@ -147,13 +154,32 @@ const MeScreen = () => {
 
   const handleExportAll = () => setShowExportModal(true);
 
-  const handleExport = (type: 'json' | 'html' | 'md') => {
+  const executeExport = (type: 'json' | 'html' | 'md') => {
     setShowExportModal(false);
     const ids = exportTargetIds ?? undefined;
     if (type === 'json') exportDiaryEntriesToJson(database, ids);
     else if (type === 'html') exportDiaryEntriesToHtml(database, ids);
     else exportDiaryEntriesToMarkdown(database, ids);
     setExportTargetIds(null);
+  };
+
+  const handleExport = async (type: 'json' | 'html' | 'md') => {
+    const [backup, lockedFolderIds] = await Promise.all([
+      database.exportEntries(),
+      getLockedFolderIds(),
+    ]);
+    const targetIds = exportTargetIds ? new Set(exportTargetIds) : null;
+    const includesProtected = backup.entries.some((entry) =>
+      (!targetIds || targetIds.has(entry.id)) &&
+      (entry.locked || (!!entry.folderId && lockedFolderIds.includes(entry.folderId)))
+    );
+    if (includesProtected) {
+      setShowExportModal(false);
+      setPendingExportFormat(type);
+      setShowExportUnlock(true);
+      return;
+    }
+    executeExport(type);
   };
 
   // ==================== Selective Export ====================
@@ -297,6 +323,7 @@ const MeScreen = () => {
       }
     }
     await removePassword();
+    await database.clearAllEntryLocks();
     setHasPw(false);
     setShowPasswordModal(false);
     Alert.alert('成功', '密码已移除，所有文件夹已解锁。');
@@ -307,7 +334,7 @@ const MeScreen = () => {
   const handleTemplatePreview = (template: DiaryTemplate) => {
     Alert.alert(
       template.name,
-      template.content || '空白日记，无预设内容。',
+      `${template.description}\n\n${template.content || '空白日记，无预设内容。'}`,
       [
         { text: '取消', style: 'cancel' },
         { text: '用这个模板写日记', onPress: () => {
@@ -458,43 +485,64 @@ const MeScreen = () => {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
-      {/* Avatar */}
-      <TouchableOpacity style={styles.avatarWrapper} onPress={handlePickAvatar} activeOpacity={0.7}>
-        {settings.avatarUri ? (
-          <Image source={{ uri: settings.avatarUri }} style={styles.avatarImage} />
-        ) : (
-          <View style={styles.avatarCircle}>
-            <Text style={styles.avatarInitial}>{settings.nickname.charAt(0).toUpperCase()}</Text>
-          </View>
-        )}
-      </TouchableOpacity>
-      <TouchableOpacity onPress={() => { setNicknameInput(settings.nickname); setShowNicknameModal(true); }}>
-        <Text style={styles.nickname}>{settings.nickname}</Text>
-      </TouchableOpacity>
-
-      {/* Stats Card */}
-      <View style={styles.statsCard}>
-        <View style={styles.statItem}>
-          <Text style={styles.statValue}>{stats.totalEntries}</Text>
-          <Text style={styles.statLabel}>总篇数</Text>
-        </View>
-        <View style={styles.statDivider} />
-        <View style={styles.statItem}>
-          <Text style={styles.statValue}>{stats.monthEntries}</Text>
-          <Text style={styles.statLabel}>本月</Text>
-        </View>
-        <View style={styles.statDivider} />
-        <View style={styles.statItem}>
-          <Text style={styles.statValue}>{stats.totalChars.toLocaleString()}</Text>
-          <Text style={styles.statLabel}>总字数</Text>
-        </View>
-        <View style={styles.statDivider} />
-        <View style={styles.statItem}>
-          <Text style={styles.statValue}>{stats.streak}</Text>
-          <Text style={styles.statLabel}>连续天数</Text>
+    <View style={styles.screen}>
+      <StarryBackground />
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={[styles.contentContainer, { paddingTop: insets.top + 18 }]}
+        contentInsetAdjustmentBehavior="never"
+      >
+      <View style={styles.profileHero}>
+        <TouchableOpacity style={styles.avatarWrapper} onPress={handlePickAvatar} activeOpacity={0.7}>
+          {settings.avatarUri ? (
+            <Image source={{ uri: settings.avatarUri }} style={styles.avatarImage} />
+          ) : (
+            <View style={styles.avatarCircle}>
+              <Text style={styles.avatarInitial}>{settings.nickname.charAt(0).toUpperCase()}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+        <View style={styles.profileCopy}>
+          <Text style={styles.profileEyebrow}>MY DIARY</Text>
+          <TouchableOpacity onPress={() => { setNicknameInput(settings.nickname); setShowNicknameModal(true); }}>
+            <Text style={styles.nickname}>{settings.nickname}</Text>
+          </TouchableOpacity>
+          <Text style={styles.profileSubtitle}>认真生活，也认真收藏每一个片刻</Text>
         </View>
       </View>
+
+      {/* Stats Card */}
+      <SurfaceCard style={styles.statsCard}>
+        <StatBlock value={stats.totalEntries} label="总篇数" />
+        <View style={styles.statDivider} />
+        <StatBlock value={stats.monthEntries} label="本月" />
+        <View style={styles.statDivider} />
+        <StatBlock value={stats.totalChars.toLocaleString()} label="总字数" />
+        <View style={styles.statDivider} />
+        <StatBlock value={stats.streak} label="连续天数" />
+      </SurfaceCard>
+
+      {/* Mood Distribution */}
+      {Object.keys(stats.moodDistribution).length > 0 && (
+        <SurfaceCard style={styles.moodCard}>
+          <Text style={styles.moodCardTitle}>心情分布</Text>
+          <View style={styles.moodRow}>
+            {Object.entries(stats.moodDistribution)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 6)
+              .map(([emoji, count]) => {
+                const mood = MOOD_OPTIONS.find((m) => m.emoji === emoji);
+                return (
+                  <View key={emoji} style={styles.moodItem}>
+                    <Text style={styles.moodEmoji}>{emoji}</Text>
+                    <View style={[styles.moodBar, { height: Math.max(4, (count / stats.totalEntries) * 34), backgroundColor: mood?.color || colors.primary }]} />
+                    <Text style={styles.moodCount}>{count}</Text>
+                  </View>
+                );
+              })}
+          </View>
+        </SurfaceCard>
+      )}
 
       {/* Data & Export */}
       {renderSection('数据与印记', <>
@@ -526,14 +574,17 @@ const MeScreen = () => {
             {expandedCategory === cat.id && cat.templates.map((t) => (
               <TouchableOpacity
                 key={t.id}
-                style={[styles.settingRow, { paddingLeft: 44 }]}
+                style={styles.templateRow}
                 onPress={() => handleTemplatePreview(t)}
               >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <View style={[styles.templateListIcon, { backgroundColor: t.color + '20' }]}>
                   <MaterialIcons name={t.icon as any} size={18} color={t.color} />
-                  <Text style={[styles.settingTitle, { fontSize: 14 }]}>{t.name}</Text>
                 </View>
-                <MaterialIcons name="chevron-right" size={18} color={colors.placeholder} />
+                <View style={styles.templateListCopy}>
+                  <Text style={styles.templateListName}>{t.name}</Text>
+                  <Text style={styles.templateListDescription} numberOfLines={1}>{t.description}</Text>
+                </View>
+                <Text style={styles.templateListTime}>{t.estimatedMinutes || 5} 分钟</Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -577,6 +628,20 @@ const MeScreen = () => {
           </View>
         </View>
       </Modal>
+      <UnlockModal
+        visible={showExportUnlock}
+        title="验证后导出"
+        onCancel={() => {
+          setShowExportUnlock(false);
+          setPendingExportFormat(null);
+        }}
+        onUnlocked={() => {
+          const format = pendingExportFormat;
+          setShowExportUnlock(false);
+          setPendingExportFormat(null);
+          if (format) executeExport(format);
+        }}
+      />
 
       {/* Two-Level Select Modal */}
       <Modal visible={showSelectModal} transparent animationType="fade">
@@ -699,73 +764,135 @@ const MeScreen = () => {
           </View>
         </View>
       </Modal>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 };
 
 const makeStyles = (colors: ReturnType<typeof useThemeColors>) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  contentContainer: { paddingTop: 40, paddingBottom: 40, alignItems: 'center' },
-  avatarWrapper: { marginBottom: 16 },
-  avatarCircle: { width: 96, height: 96, borderRadius: 48, borderWidth: 1.5, borderColor: colors.textTertiary, justifyContent: 'center', alignItems: 'center', backgroundColor: 'transparent' },
-  avatarInitial: { fontSize: 36, fontWeight: '300', color: colors.textTertiary },
-  avatarImage: { width: 96, height: 96, borderRadius: 48 },
-  nickname: { fontSize: 22, fontWeight: '700', color: colors.text, marginBottom: 20 },
+  screen: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1, backgroundColor: 'transparent' },
+  contentContainer: { paddingBottom: 36, alignItems: 'center' },
+  profileHero: { width: '100%', paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
+  avatarWrapper: { marginRight: 14 },
+  avatarCircle: { width: 64, height: 64, borderRadius: 18, borderWidth: 1, borderColor: colors.cardBorder, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.surfaceMuted },
+  avatarInitial: { fontSize: 26, fontWeight: '700', color: colors.primary },
+  avatarImage: { width: 64, height: 64, borderRadius: 20 },
+  profileCopy: { flex: 1 },
+  profileEyebrow: { fontSize: 10, fontWeight: '800', letterSpacing: 1.6, color: colors.brandSecondary, marginBottom: 4 },
+  nickname: { fontSize: 22, fontWeight: '800', color: colors.text, marginBottom: 3 },
+  profileSubtitle: { fontSize: 12, lineHeight: 18, color: colors.textTertiary },
   statsCard: {
     flexDirection: 'row',
     backgroundColor: colors.card,
-    borderRadius: 14,
-    paddingVertical: 16,
-    paddingHorizontal: 8,
-    marginBottom: 28,
-    width: '100%',
-    maxWidth: 320,
-    marginHorizontal: 24,
+    borderRadius: 16,
+    paddingVertical: 9,
+    paddingHorizontal: 6,
+    marginBottom: 18,
+    alignSelf: 'stretch',
+    marginHorizontal: 20,
+    shadowOpacity: 0.025,
   },
-  statItem: {
-    flex: 1,
+  moodCard: {
+    borderRadius: 16,
+    padding: 13,
+    marginBottom: 18,
+    alignSelf: 'stretch',
+    marginHorizontal: 20,
+    shadowOpacity: 0.025,
+  },
+  moodCardTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    marginBottom: 8,
+  },
+  moodRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'flex-end',
+    height: 58,
+  },
+  moodItem: {
     alignItems: 'center',
+    gap: 4,
   },
-  statValue: {
+  moodEmoji: {
     fontSize: 20,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: 4,
   },
-  statLabel: {
-    fontSize: 11,
-    color: colors.textTertiary,
+  moodBar: {
+    width: 24,
+    borderRadius: 4,
+    minHeight: 4,
+  },
+  moodCount: {
+    fontSize: 10,
+    color: colors.placeholder,
   },
   statDivider: {
     width: StyleSheet.hairlineWidth,
     backgroundColor: colors.border,
     marginVertical: 4,
   },
-  section: { width: '100%', paddingHorizontal: 24, marginBottom: 28 },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 8 },
-  sectionDiamond: { fontSize: 14, color: colors.textTertiary },
+  section: { width: '100%', paddingHorizontal: 20, marginBottom: 16 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 9, gap: 8 },
+  sectionDiamond: { fontSize: 12, color: colors.brandSecondary },
   sectionTitle: { fontSize: 14, fontWeight: '500', color: colors.textSecondary },
   sectionLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
-  sectionContent: { backgroundColor: colors.card, borderRadius: 12, overflow: 'hidden' },
-  settingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 15, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.hairline },
+  sectionContent: { backgroundColor: colors.card, borderRadius: 15, overflow: 'hidden', borderWidth: StyleSheet.hairlineWidth, borderColor: colors.cardBorder },
+  settingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.hairline },
   settingRowNoArrow: { paddingHorizontal: 16, paddingVertical: 15, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.hairline },
   settingTitle: { fontSize: 15, color: colors.text },
+  templateRow: {
+    minHeight: 64,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.hairline,
+  },
+  templateListIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  templateListCopy: {
+    flex: 1,
+  },
+  templateListName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  templateListDescription: {
+    marginTop: 3,
+    fontSize: 11,
+    color: colors.textTertiary,
+  },
+  templateListTime: {
+    fontSize: 10,
+    color: colors.placeholder,
+  },
   chipSection: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.hairline },
   chipLabel: { fontSize: 13, color: colors.textTertiary, marginBottom: 8 },
   chipRow: { flexDirection: 'row', gap: 8 },
-  chip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 8, backgroundColor: colors.input },
+  chip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999, backgroundColor: colors.surfaceMuted },
   chipText: { fontSize: 13, color: colors.textTertiary },
   // Modal
   modalOverlay: { flex: 1, backgroundColor: colors.modalOverlay, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  modalContent: { backgroundColor: colors.card, borderRadius: 16, padding: 24, width: '100%', maxWidth: 360 },
+  modalContent: { backgroundColor: colors.card, borderRadius: 22, padding: 24, width: '100%', maxWidth: 360 },
   modalTitle: { fontSize: 18, fontWeight: '700', color: colors.text, marginBottom: 8, textAlign: 'center' },
-  modalInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 16, color: colors.text, backgroundColor: colors.input, marginBottom: 16 },
+  modalInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: colors.text, backgroundColor: colors.surfaceMuted, marginBottom: 16 },
   modalActions: { flexDirection: 'row', gap: 12 },
-  modalBtnCancelSmall: { flex: 1, paddingVertical: 12, borderRadius: 8, backgroundColor: colors.input, alignItems: 'center' },
+  modalBtnCancelSmall: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: colors.surfaceMuted, alignItems: 'center' },
   modalBtnCancelSmallText: { fontSize: 16, color: colors.textSecondary },
-  modalBtnConfirm: { flex: 1, paddingVertical: 12, borderRadius: 8, backgroundColor: colors.primary, alignItems: 'center' },
-  modalBtnConfirmText: { fontSize: 16, color: '#fff', fontWeight: '600' },
-  modalBtnCancel: { marginTop: 12, paddingVertical: 12, borderRadius: 8, backgroundColor: colors.input, alignItems: 'center' },
+  modalBtnConfirm: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: colors.primary, alignItems: 'center' },
+  modalBtnConfirmText: { fontSize: 16, color: colors.onPrimary, fontWeight: '600' },
+  modalBtnCancel: { marginTop: 12, paddingVertical: 12, borderRadius: 12, backgroundColor: colors.surfaceMuted, alignItems: 'center' },
   modalBtnCancelText: { fontSize: 16, color: colors.textSecondary },
   // Export options
   exportOption: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.hairline },
@@ -788,14 +915,14 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>) => StyleSheet.cre
   folderSelectCheck: { padding: 4 },
   // Entry select
   selectItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.hairline },
-  selectItemActive: { backgroundColor: colors.input, marginHorizontal: -12, paddingHorizontal: 12, borderRadius: 8 },
+  selectItemActive: { backgroundColor: colors.surfaceMuted, marginHorizontal: -12, paddingHorizontal: 12, borderRadius: 12 },
   selectItemContent: { flex: 1 },
   selectItemTitle: { fontSize: 15, color: colors.text },
   selectActions: { flexDirection: 'row', gap: 12, marginTop: 12 },
-  selectBtnAll: { flex: 1, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
+  selectBtnAll: { flex: 1, paddingVertical: 11, borderRadius: 12, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
   selectBtnAllText: { fontSize: 14, color: colors.textSecondary },
-  selectBtnExport: { flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.primary, alignItems: 'center' },
-  selectBtnExportText: { fontSize: 14, color: '#fff', fontWeight: '600' },
+  selectBtnExport: { flex: 1, paddingVertical: 11, borderRadius: 12, backgroundColor: colors.primary, alignItems: 'center' },
+  selectBtnExportText: { fontSize: 14, color: colors.onPrimary, fontWeight: '600' },
 });
 
 export default MeScreen;

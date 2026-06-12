@@ -16,11 +16,14 @@ export type DiaryEntry = {
   updatedAt: string;
   tags: string[];
   isPinned?: boolean;
+  locked?: boolean;
   deletedAt?: string | null;
   mood?: string | null;
   imageUris?: string[];
   background?: string | null;
 };
+
+export type TrashedDiaryEntry = DiaryEntry & { deletedAt: string };
 
 export const MOOD_OPTIONS = [
   { emoji: '😊', label: '开心', color: '#FFD93D' },

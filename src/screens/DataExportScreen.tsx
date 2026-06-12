@@ -11,6 +11,10 @@ import {
   importDiaryEntriesFromJson,
   importDiaryEntriesFromMarkdown,
 } from '../utils/export';
+import UnlockModal from '../components/UnlockModal';
+import { ActionButton } from '../components/ui';
+import { StarryBackground } from '../components/StarryBackground';
+import { getLockedFolderIds, hasPassword } from '../services/password';
 
 const DataExportScreen = () => {
   const database = useDatabase();
@@ -18,15 +22,37 @@ const DataExportScreen = () => {
   const colors = useThemeColors();
   const fontFamily = getFontFamily(settings.fontFamily) ?? 'System';
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showExportUnlock, setShowExportUnlock] = useState(false);
+  const [pendingFormat, setPendingFormat] = useState<'json' | 'html' | 'md' | null>(null);
 
-  const handleExport = useCallback(async (format: 'json' | 'html' | 'md') => {
-    setShowExportModal(false);
+  const executeExport = useCallback(async (format: 'json' | 'html' | 'md') => {
     switch (format) {
       case 'json': await exportDiaryEntriesToJson(database); break;
       case 'html': await exportDiaryEntriesToHtml(database); break;
       case 'md': await exportDiaryEntriesToMarkdown(database); break;
     }
   }, [database]);
+
+  const handleExport = useCallback(async (format: 'json' | 'html' | 'md') => {
+    setShowExportModal(false);
+    const [backup, lockedFolderIds] = await Promise.all([
+      database.exportEntries(),
+      getLockedFolderIds(),
+    ]);
+    const includesProtected = backup.entries.some(
+      (entry) => entry.locked || (!!entry.folderId && lockedFolderIds.includes(entry.folderId))
+    );
+    if (includesProtected) {
+      if (!(await hasPassword())) {
+        Alert.alert('无法导出', '存在锁定日记，但应用密码尚未设置。');
+        return;
+      }
+      setPendingFormat(format);
+      setShowExportUnlock(true);
+      return;
+    }
+    await executeExport(format);
+  }, [database, executeExport]);
 
   const handleImport = useCallback(() => {
     Alert.alert('导入日记', '选择要导入的文件格式', [
@@ -39,7 +65,18 @@ const DataExportScreen = () => {
   const styles = makeStyles(colors, settings.fontSize, fontFamily);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <View style={styles.screen}>
+      <StarryBackground />
+      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <View style={styles.hero}>
+        <View style={[styles.heroIcon, { backgroundColor: colors.selectedBg }]}>
+          <MaterialIcons name="inventory-2" size={28} color={colors.primary} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.heroTitle}>保管你的文字</Text>
+          <Text style={styles.heroSubtitle}>定期备份，让每一段记录都有归处</Text>
+        </View>
+      </View>
       <View style={styles.section}>
         <TouchableOpacity style={styles.menuRow} onPress={() => setShowExportModal(true)}>
           <View style={styles.menuLeft}>
@@ -60,12 +97,10 @@ const DataExportScreen = () => {
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.hint}>
-        导出格式说明{'\n'}
-        • JSON — 完整备份，可重新导入{'\n'}
-        • HTML — 精美网页，可在浏览器查看{'\n'}
-        • Markdown — 纯文本格式，兼容性好
-      </Text>
+      <View style={styles.hintCard}>
+        <Text style={styles.hintTitle}>格式说明</Text>
+        <Text style={styles.hint}>JSON  ·  完整备份，可重新导入{'\n'}HTML  ·  适合阅读和打印{'\n'}Markdown  ·  纯文本，兼容性好</Text>
+      </View>
 
       {/* Export Format Modal */}
       <Modal visible={showExportModal} transparent animationType="fade">
@@ -93,23 +128,48 @@ const DataExportScreen = () => {
                 <Text style={styles.exportOptionDesc}>纯文本格式，兼容性好</Text>
               </View>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setShowExportModal(false)}>
-              <Text style={styles.modalBtnCancelText}>取消</Text>
-            </TouchableOpacity>
+            <ActionButton label="取消" icon="close" onPress={() => setShowExportModal(false)} />
           </View>
         </View>
       </Modal>
-    </ScrollView>
+      <UnlockModal
+        visible={showExportUnlock}
+        title="验证后导出"
+        onCancel={() => {
+          setShowExportUnlock(false);
+          setPendingFormat(null);
+        }}
+        onUnlocked={() => {
+          const format = pendingFormat;
+          setShowExportUnlock(false);
+          setPendingFormat(null);
+          if (format) void executeExport(format);
+        }}
+      />
+      </ScrollView>
+    </View>
   );
 };
 
 const makeStyles = (colors: ReturnType<typeof useThemeColors>, fontSize: number, fontFamily: string) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: 16, paddingBottom: 40 },
+  screen: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1, backgroundColor: 'transparent' },
+  content: { padding: 18, paddingBottom: 40 },
+  hero: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 20, paddingHorizontal: 2 },
+  heroIcon: { width: 56, height: 56, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  heroTitle: { fontSize: 21, fontWeight: '800', color: colors.text },
+  heroSubtitle: { fontSize: 13, lineHeight: 19, color: colors.textTertiary, marginTop: 3 },
   section: {
     backgroundColor: colors.card,
-    borderRadius: 12,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.cardBorder,
     overflow: 'hidden',
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 1,
   },
   menuRow: {
     flexDirection: 'row',
@@ -133,23 +193,24 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, fontSize: number,
     backgroundColor: colors.border,
     marginLeft: 50,
   },
+  hintCard: { marginTop: 18, padding: 16, borderRadius: 16, backgroundColor: colors.surfaceMuted },
+  hintTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: 7 },
   hint: {
     fontSize: 12,
-    color: colors.placeholder,
-    marginTop: 20,
-    lineHeight: 18,
+    color: colors.textTertiary,
+    lineHeight: 21,
     fontFamily,
   },
   modalOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: colors.modalOverlay,
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalContent: {
-    width: '80%',
+    width: '88%',
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 22,
     padding: 24,
   },
   modalTitle: {
@@ -187,8 +248,8 @@ const makeStyles = (colors: ReturnType<typeof useThemeColors>, fontSize: number,
     marginTop: 16,
     paddingVertical: 12,
     alignItems: 'center',
-    borderRadius: 8,
-    backgroundColor: colors.border,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceMuted,
   },
   modalBtnCancelText: {
     fontSize: 15,

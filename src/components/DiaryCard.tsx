@@ -70,13 +70,15 @@ DiaryCard.displayName = 'DiaryCard';
 const styles = StyleSheet.create({
   card: {
     width: 360,
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
+    backgroundColor: '#FFFEFA',
+    borderRadius: 24,
     padding: 28,
-    shadowColor: '#000',
+    borderWidth: 1,
+    borderColor: '#E8E1D5',
+    shadowColor: '#3B342B',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
     elevation: 5,
   },
   header: {
@@ -86,7 +88,7 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: '#E8E1D5',
   },
   userInfo: {
     flexDirection: 'row',
@@ -102,23 +104,23 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#f0f2f5',
+    backgroundColor: '#E8EFE9',
     justifyContent: 'center',
     alignItems: 'center',
   },
   avatarInitial: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#999',
+    color: '#6F8F7A',
   },
   nickname: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#333',
+    color: '#24312A',
   },
   appName: {
     fontSize: 14,
-    color: '#bbb',
+    color: '#B9785C',
   },
   titleRow: {
     flexDirection: 'row',
@@ -132,7 +134,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 26,
     fontWeight: '800',
-    color: '#1a1a1a',
+    color: '#202722',
     lineHeight: 34,
   },
   dateRow: {
@@ -143,12 +145,12 @@ const styles = StyleSheet.create({
   },
   date: {
     fontSize: 13,
-    color: '#999',
+    color: '#7D847F',
   },
   content: {
     fontSize: 16,
     lineHeight: 28,
-    color: '#333',
+    color: '#343A36',
     marginBottom: 20,
   },
   tagsContainer: {
@@ -158,24 +160,24 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   tag: {
-    backgroundColor: '#f0f2f5',
-    borderRadius: 8,
+    backgroundColor: '#E8EFE9',
+    borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 5,
   },
   tagText: {
     fontSize: 13,
-    color: '#666',
+    color: '#557060',
   },
   footer: {
     borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    borderTopColor: '#E8E1D5',
     paddingTop: 14,
     alignItems: 'center',
   },
   footerText: {
     fontSize: 12,
-    color: '#bbb',
+    color: '#9B9388',
   },
 });
 
